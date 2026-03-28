@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from typing import Any
 
 import wandb
@@ -83,7 +84,7 @@ def download_wandb_checkpoint(
         artifact_path = artifact.name
 
     if artifact is None:
-        for alias in (f"run-{run_id}", "best", "latest"):
+        for alias in ("best", "latest", f"run-{run_id}"):
             candidate = f"{entity}/{project}/{artifact_name}:{alias}"
             try:
                 artifact = api.artifact(candidate)
@@ -96,13 +97,29 @@ def download_wandb_checkpoint(
             f"Could not find checkpoint artifact for run {entity}/{project}/{run_id} and name {artifact_name}."
         )
 
-    download_dir = Path(artifact.download(root=str(out_dir)))
+    # Download to an isolated folder to avoid mixing with local training checkpoints.
+    resume_root = out_dir / ".wandb_resume" / run_id
+    if resume_root.exists():
+        shutil.rmtree(resume_root)
+    resume_root.mkdir(parents=True, exist_ok=True)
+    download_dir = Path(artifact.download(root=str(resume_root)))
     msgpacks = sorted(download_dir.glob("*.msgpack"))
     if not msgpacks:
         raise RuntimeError(
             f"Downloaded {artifact_path}, but no .msgpack checkpoint was found in {download_dir}."
         )
-    return msgpacks[0]
+    # Artifact should include exactly one checkpoint; if not, pick highest epoch.
+    if len(msgpacks) == 1:
+        return msgpacks[0]
+
+    def _epoch_from_name(path: Path) -> int:
+        stem = path.stem
+        parts = stem.split("_")
+        if parts and parts[-1].isdigit():
+            return int(parts[-1])
+        return -1
+
+    return max(msgpacks, key=_epoch_from_name)
 
 
 def get_resume_epoch_from_wandb(entity: str, project: str, run_id: str) -> int:

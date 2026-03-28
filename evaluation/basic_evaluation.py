@@ -319,7 +319,7 @@ def _load_params(model: BertForDiffusion, cfg: EvalConfig):
     state = create_train_state(model, jax.random.PRNGKey(0), sample_x, sample_mask)
     b = Path(cfg.checkpoint_path).read_bytes()
     loaded = flax.serialization.from_bytes(state, b)
-    return loaded.params
+    return loaded.ema_params if getattr(loaded, "ema_params", None) is not None else loaded.params
 
 
 def _sample_batch(

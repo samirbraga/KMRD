@@ -246,6 +246,12 @@ def _compute_val_kl(
     return float(np.mean(kl_vals))
 
 
+def _params_for_eval(state: TrainState, use_ema: bool):
+    if use_ema and state.ema_params is not None:
+        return state.ema_params
+    return state.params
+
+
 def main() -> None:
     cfg = load_config_from_resumed_run(TrainConfig())
     np_rng = np.random.default_rng(cfg.seed)
@@ -326,6 +332,8 @@ def main() -> None:
         sample_mask=init_batch["geo_mask"],
         learning_rate=learning_rate,
         weight_decay=cfg.weight_decay,
+        use_ema=cfg.use_ema,
+        ema_decay=cfg.ema_decay,
     )
     start_epoch = 1
     if cfg.resume_run:
@@ -372,7 +380,8 @@ def main() -> None:
         f"Training start: n_train={len(train_ds)} n_val={len(val_ds)} batch={cfg.batch_size} "
         f"metric={cfg.metric_type} cond_g={model_cfg.condition_on_g_diag} "
         f"devices={n_devices} distributed={use_distributed} "
-        f"lr_sched={cfg.lr_sched} lr_type={cfg.lr_schedule_type if cfg.lr_sched else 'constant'}"
+        f"lr_sched={cfg.lr_sched} lr_type={cfg.lr_schedule_type if cfg.lr_sched else 'constant'} "
+        f"use_ema={cfg.use_ema} eval_use_ema={cfg.eval_use_ema}"
     )
     train_step_fn = make_train_step_pmap(loss_cfg) if use_distributed else make_train_step(loss_cfg)
     eval_step_fn = make_eval_step_pmap(loss_cfg) if use_distributed else make_eval_step(loss_cfg)
@@ -478,11 +487,9 @@ def main() -> None:
                 f"val_sigma2={val_metrics['sigma2_mean']:.4f}"
             )
             if cfg.val_kl_enable and val_ref_angles is not None and val_ref_lengths is not None:
-                params_for_sampling = (
-                    flax_jax_utils.unreplicate(state).params if use_distributed else state.params
-                )
+                eval_state = flax_jax_utils.unreplicate(state) if use_distributed else state
                 val_kl = _compute_val_kl(
-                    params=params_for_sampling,
+                    params=_params_for_eval(eval_state, cfg.eval_use_ema),
                     cfg=cfg,
                     reference_angles=val_ref_angles,
                     val_lengths=val_ref_lengths,

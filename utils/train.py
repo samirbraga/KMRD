@@ -60,6 +60,8 @@ class ScoreTrainConfig:
 
 class TrainState(train_state.TrainState):
     rng: jax.Array
+    ema_params: Any | None = None
+    ema_decay: float = 0.999
 
 
 def create_train_state(
@@ -67,8 +69,10 @@ def create_train_state(
     rng: jax.Array,
     sample_x: jnp.ndarray,
     sample_mask: jnp.ndarray,
-    learning_rate: float = 1e-4,
+    learning_rate: float | optax.Schedule = 1e-4,
     weight_decay: float = 1e-2,
+    use_ema: bool = True,
+    ema_decay: float = 0.999,
 ) -> TrainState:
     init_g = jnp.zeros_like(sample_x)
     variables = model.init(
@@ -86,6 +90,8 @@ def create_train_state(
         params=variables["params"],
         tx=tx,
         rng=rng,
+        ema_params=variables["params"] if use_ema else None,
+        ema_decay=float(ema_decay),
     )
 
 
@@ -197,6 +203,16 @@ def make_train_step(cfg: ScoreTrainConfig):
             scale = jnp.minimum(1.0, cfg.max_grad_norm / (grad_norm + 1e-6))
             grads = jax.tree_util.tree_map(lambda g: g * scale, grads)
         new_state = state.apply_gradients(grads=grads)
+        if new_state.ema_params is not None:
+            step_size = jnp.asarray(1.0, dtype=jnp.float32) - jnp.asarray(
+                new_state.ema_decay, dtype=jnp.float32
+            )
+            new_ema = optax.incremental_update(
+                new_state.params,
+                new_state.ema_params,
+                step_size=step_size,
+            )
+            new_state = new_state.replace(ema_params=new_ema)
         new_state = new_state.replace(rng=rng)
         metrics = dict(aux)
         metrics["loss"] = loss
@@ -223,6 +239,16 @@ def make_train_step_pmap(cfg: ScoreTrainConfig):
             grads = jax.tree_util.tree_map(lambda g: g * scale, grads)
 
         new_state = state.apply_gradients(grads=grads)
+        if new_state.ema_params is not None:
+            step_size = jnp.asarray(1.0, dtype=jnp.float32) - jnp.asarray(
+                new_state.ema_decay, dtype=jnp.float32
+            )
+            new_ema = optax.incremental_update(
+                new_state.params,
+                new_state.ema_params,
+                step_size=step_size,
+            )
+            new_state = new_state.replace(ema_params=new_ema)
         new_state = new_state.replace(rng=rng)
         metrics = dict(aux)
         metrics["loss"] = loss
@@ -234,7 +260,8 @@ def make_train_step_pmap(cfg: ScoreTrainConfig):
 def make_eval_step(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
-        loss, aux = _score_loss(state.params, state.apply_fn, batch, step_rng, cfg)
+        eval_params = state.ema_params if state.ema_params is not None else state.params
+        loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         metrics = dict(aux)
         metrics["loss"] = loss
         metrics["rng_next"] = rng
@@ -246,7 +273,8 @@ def make_eval_step(cfg: ScoreTrainConfig):
 def make_eval_step_pmap(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
-        loss, aux = _score_loss(state.params, state.apply_fn, batch, step_rng, cfg)
+        eval_params = state.ema_params if state.ema_params is not None else state.params
+        loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         loss = lax.pmean(loss, axis_name="data")
         aux = lax.pmean(aux, axis_name="data")
         metrics = dict(aux)

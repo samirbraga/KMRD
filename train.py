@@ -27,6 +27,101 @@ from utils.train import (
 )
 
 
+def _parse_wandb_run_path(run_ref: str, entity: str, project: str) -> tuple[str, str, str]:
+    parts = run_ref.strip().split("/")
+    if len(parts) == 1:
+        return entity, project, parts[0]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    raise ValueError(
+        f"Invalid resume_run={run_ref!r}. Use run_id or 'entity/project/run_id'."
+    )
+
+
+def _load_config_from_resumed_run(cfg: TrainConfig) -> TrainConfig:
+    if not cfg.resume_run:
+        return cfg
+    if cfg.wandb_mode == "disabled":
+        raise ValueError("resume_run requires wandb_mode != disabled")
+
+    entity, project, run_id = _parse_wandb_run_path(
+        cfg.resume_run, cfg.wandb_entity, cfg.wandb_project
+    )
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project}/{run_id}")
+
+    known_fields = set(TrainConfig.model_fields.keys())
+    resumed_values = {k: v for k, v in run.config.items() if k in known_fields}
+    merged = cfg.model_dump()
+    merged.update(resumed_values)
+    merged["resume_run"] = run_id
+    merged["wandb_entity"] = entity
+    merged["wandb_project"] = project
+    return TrainConfig(**merged)
+
+
+def _download_wandb_checkpoint(
+    *,
+    entity: str,
+    project: str,
+    run_id: str,
+    artifact_name: str,
+    out_dir: Path,
+) -> Path:
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project}/{run_id}")
+    artifact = None
+    artifact_path = None
+
+    try:
+        logged = list(run.logged_artifacts())
+    except Exception:
+        logged = []
+    own_model_artifacts = [
+        a for a in logged if f"{entity}/{project}/{artifact_name}:" in getattr(a, "name", "")
+    ]
+    def _alias_values(artifact_obj) -> list[str]:
+        vals: list[str] = []
+        for x in getattr(artifact_obj, "aliases", []):
+            vals.append(x if isinstance(x, str) else getattr(x, "alias", ""))
+        return vals
+
+    best_candidates = [a for a in own_model_artifacts if "best" in _alias_values(a)]
+    latest_candidates = [a for a in own_model_artifacts if "latest" in _alias_values(a)]
+    if best_candidates:
+        artifact = best_candidates[-1]
+        artifact_path = artifact.name
+    elif latest_candidates:
+        artifact = latest_candidates[-1]
+        artifact_path = artifact.name
+    elif own_model_artifacts:
+        artifact = own_model_artifacts[-1]
+        artifact_path = artifact.name
+
+    if artifact is None:
+        # Fallback path if API cannot enumerate run artifacts.
+        for alias in (f"run-{run_id}", "best", "latest"):
+            candidate = f"{entity}/{project}/{artifact_name}:{alias}"
+            try:
+                artifact = api.artifact(candidate)
+                artifact_path = candidate
+                break
+            except Exception:
+                continue
+    if artifact is None:
+        raise RuntimeError(
+            f"Could not find checkpoint artifact for run {entity}/{project}/{run_id} and name {artifact_name}."
+        )
+
+    download_dir = Path(artifact.download(root=str(out_dir)))
+    msgpacks = sorted(download_dir.glob("*.msgpack"))
+    if not msgpacks:
+        raise RuntimeError(
+            f"Downloaded {artifact_path}, but no .msgpack checkpoint was found in {download_dir}."
+        )
+    return msgpacks[0]
+
+
 def _batch_iter(
     dataset: CathCanonicalAnglesOnlyDataset,
     batch_size: int,
@@ -84,8 +179,41 @@ def _save_checkpoint(path: Path, state: TrainState, epoch: int, metrics: dict[st
     with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+
+def _load_checkpoint_meta(path: Path) -> dict:
+    meta_path = path.with_suffix(".json")
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _log_checkpoint_artifact(
+    run: wandb.sdk.wandb_run.Run,
+    *,
+    ckpt_path: Path,
+    epoch: int,
+    is_best: bool,
+    artifact_name: str,
+) -> None:
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="model",
+        metadata={"run_id": run.id, "epoch": epoch},
+    )
+    artifact.add_file(str(ckpt_path), name=ckpt_path.name)
+    meta_path = ckpt_path.with_suffix(".json")
+    if meta_path.exists():
+        artifact.add_file(str(meta_path), name=meta_path.name)
+    aliases = ["latest", f"epoch-{epoch:04d}", f"run-{run.id}"]
+    if is_best:
+        aliases.append("best")
+    run.log_artifact(artifact, aliases=aliases)
+
 def main() -> None:
-    cfg = TrainConfig()
+    cfg = _load_config_from_resumed_run(TrainConfig())
     np_rng = np.random.default_rng(cfg.seed)
     jax_rng = jax.random.PRNGKey(cfg.seed)
     wandb_run = None
@@ -98,7 +226,7 @@ def main() -> None:
             config=cfg.model_dump(),
             mode=cfg.wandb_mode,
             id=cfg.resume_run,
-            resume="allow" if cfg.resume_run else None,
+            resume="must" if cfg.resume_run else None,
         )
 
     train_ds = CathCanonicalAnglesOnlyDataset(
@@ -142,6 +270,20 @@ def main() -> None:
         learning_rate=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
+    start_epoch = 1
+    if cfg.resume_run:
+        resume_ckpt = _download_wandb_checkpoint(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+            run_id=cfg.resume_run,
+            artifact_name=cfg.checkpoint_artifact_name,
+            out_dir=Path(cfg.weights_path),
+        )
+        state_single = flax.serialization.from_bytes(state_single, resume_ckpt.read_bytes())
+        meta = _load_checkpoint_meta(resume_ckpt)
+        start_epoch = int(meta.get("epoch", 0)) + 1
+        print(f"resumed_checkpoint={resume_ckpt}")
+        print(f"resumed_start_epoch={start_epoch}")
     state: TrainState = flax_jax_utils.replicate(state_single) if use_distributed else state_single
 
     loss_cfg = ScoreTrainConfig(
@@ -173,7 +315,8 @@ def main() -> None:
     )
     train_step_fn = make_train_step_pmap(loss_cfg) if use_distributed else make_train_step(loss_cfg)
 
-    for epoch in range(1, cfg.epochs + 1):
+    best_loss = float("inf")
+    for epoch in range(start_epoch, cfg.epochs + 1):
         if use_distributed:
             batches = _batch_iter_sharded(
                 train_ds,
@@ -214,6 +357,9 @@ def main() -> None:
                 },
                 step=epoch,
             )
+        is_best = float(metrics["loss"]) <= best_loss
+        if is_best:
+            best_loss = float(metrics["loss"])
 
         if cfg.save_every_epochs > 0 and (epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs):
             ckpt_path = ckpt_root / f"model_epoch_{epoch:04d}.msgpack"
@@ -222,6 +368,13 @@ def main() -> None:
             print(f"saved={ckpt_path}")
             if wandb_run is not None:
                 wandb_run.log({"checkpoint_path": str(ckpt_path)}, step=epoch)
+                _log_checkpoint_artifact(
+                    wandb_run,
+                    ckpt_path=ckpt_path,
+                    epoch=epoch,
+                    is_best=is_best,
+                    artifact_name=cfg.checkpoint_artifact_name,
+                )
 
     if wandb_run is not None:
         wandb_run.finish()

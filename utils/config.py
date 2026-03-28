@@ -53,3 +53,4 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     wandb_run_name: str | None = None
     wandb_mode: Literal["online", "offline", "disabled", "shared"] | None = "disabled"
     resume_run: str | None = None
+    checkpoint_artifact_name: str = "model_state"

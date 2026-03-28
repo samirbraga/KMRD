@@ -1,0 +1,102 @@
+[project]
+name = "rdem"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "accelerate>=1.12.0",
+    "astropy>=7.2.0",
+    "biopython>=1.85",
+    "biotite>=1.5.0",
+    "cartopy>=0.25.0",
+    "dotenv>=0.9.9",
+    "fsspec[http]>=2021.5.0,!=2021.6.0",
+    "hydra-colorlog>=1.2.0",
+    "hydra-core>=1.3.0",
+    "hydra-joblib-launcher>=1.2.0",
+    "joblib>=1.5.2",
+    "libigl>=2.6.1",
+    "matplotlib>=3.10.7",
+    "mpl-scatter-density>=0.8",
+    "numpy>=2.3.3",
+    "plotly>=6.3.1",
+    "pyvista>=0.46.3",
+    "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
+    "transformers>=4.57.1",
+    "wandb>=0.23.0",
+    "datasets>=4.4.1",
+    "evaluate>=0.4.6",
+    "scikit-learn>=1.8.0rc1",
+    "pydantic-settings>=2.12.0",
+    "loguru>=0.7.3",
+    "nglview>=4.0.1",
+    "pdbfixer",
+    "mdtraj>=1.11.1.post1",
+    "imageio>=2.37",
+    "moviepy==2.2.1",
+]
+
+[project.optional-dependencies]
+# Shared torch stack (torch + libs that depend on it)
+torch = [
+    "torch==2.9.0",
+    "torchdiffeq>=0.2.5",
+    "pytorch-lightning>=2.5.6",
+]
+# TPU: torch-xla handles the TPU runtime; use plain jax (no [tpu] extra)
+# to avoid libtpu version conflict between jax[tpu] and torch_xla[tpu]
+tpu = [
+    "rdem[torch]",
+    "torch_xla[tpu]==2.9.0",
+    "jax>=0.9.2",
+    "flax>=0.12.0",
+    "cloud-tpu-diagnostics>=0.1.5",
+]
+# GPU: CUDA-backed jax + OpenMM CUDA build
+gpu = [
+    "rdem[torch]",
+    "jax[cuda13]>=0.9.2",
+    "flax>=0.12.0",
+    "openmm-cuda-13>=8.4.0.post2",
+]
+# CPU-only fallback
+cpu = [
+    "rdem[torch]",
+    "jax[cpu]>=0.9.2",
+    "flax>=0.12.0",
+]
+
+[tool.uv]
+# Allow pre-release versions, as XLA packages are often tagged as such
+prerelease = "allow"
+# tpu/gpu/cpu are mutually exclusive — don't solve them simultaneously
+conflicts = [
+    [{ extra = "tpu" }, { extra = "gpu" }, { extra = "cpu" }],
+]
+
+# Named indexes — only fetched when explicitly referenced via [tool.uv.sources]
+[[tool.uv.index]]
+name = "libtpu-releases"
+url = "https://storage.googleapis.com/libtpu-releases/index.html"
+explicit = true
+
+[[tool.uv.index]]
+name = "libtpu-wheels"
+url = "https://storage.googleapis.com/libtpu-wheels/index.html"
+explicit = true
+
+[[tool.uv.index]]
+name = "jax-cuda13"
+url = "https://storage.googleapis.com/jax-releases/jax_cuda13_releases.html"
+explicit = true
+
+[tool.uv.sources]
+pdbfixer = { git = "https://github.com/openmm/pdbfixer" }
+# Route libtpu (indirect dep of jax[tpu]) to the GCS bucket, not PyPI
+libtpu = { index = "libtpu-releases" }
+# Route JAX CUDA jaxlib to the CUDA-specific index
+jaxlib = [
+    { index = "jax-cuda13", marker = "extra == 'gpu'" },
+]

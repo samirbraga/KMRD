@@ -20,6 +20,8 @@ from utils.train import (
     ScoreTrainConfig,
     TrainState,
     create_train_state,
+    make_train_step,
+    make_train_step_pmap,
     train_one_epoch,
     train_one_epoch_pmap,
 )
@@ -162,6 +164,8 @@ def main() -> None:
         f"metric={cfg.metric_type} cond_g={model_cfg.condition_on_g_diag} "
         f"devices={n_devices} distributed={use_distributed}"
     )
+    train_step_fn = make_train_step_pmap(loss_cfg) if use_distributed else make_train_step(loss_cfg)
+
     for epoch in range(1, cfg.epochs + 1):
         if use_distributed:
             batches = _batch_iter_sharded(
@@ -177,6 +181,7 @@ def main() -> None:
                 loss_cfg,
                 epoch=epoch,
                 log_every=cfg.train_log_every,
+                train_step_fn=train_step_fn,
             )
         else:
             batches = _batch_iter(train_ds, batch_size=cfg.batch_size, rng=np_rng, shuffle=True)
@@ -186,6 +191,7 @@ def main() -> None:
                 loss_cfg,
                 epoch=epoch,
                 log_every=cfg.train_log_every,
+                train_step_fn=train_step_fn,
             )
         print(
             f"epoch={epoch:04d} loss={metrics['loss']:.6f} "

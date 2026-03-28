@@ -230,8 +230,9 @@ def train_one_epoch(
     cfg: ScoreTrainConfig,
     epoch: int | None = None,
     log_every: int = 0,
+    train_step_fn: Any | None = None,
 ) -> tuple[TrainState, dict[str, float]]:
-    train_step = make_train_step(cfg)
+    train_step = train_step_fn if train_step_fn is not None else make_train_step(cfg)
 
     loss_sum = 0.0
     g0_sum = 0.0
@@ -275,8 +276,9 @@ def train_one_epoch_pmap(
     cfg: ScoreTrainConfig,
     epoch: int | None = None,
     log_every: int = 0,
+    train_step_fn: Any | None = None,
 ) -> tuple[TrainState, dict[str, float]]:
-    train_step = make_train_step_pmap(cfg)
+    train_step = train_step_fn if train_step_fn is not None else make_train_step_pmap(cfg)
 
     loss_sum = 0.0
     g0_sum = 0.0

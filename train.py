@@ -122,6 +122,15 @@ def _download_wandb_checkpoint(
     return msgpacks[0]
 
 
+def _get_resume_epoch_from_wandb(entity: str, project: str, run_id: str) -> int:
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project}/{run_id}")
+    step = run.summary.get("_step", None)
+    if step is None:
+        step = getattr(run, "lastHistoryStep", None)
+    return int(step) if step is not None else 0
+
+
 def _batch_iter(
     dataset: CathCanonicalAnglesOnlyDataset,
     batch_size: int,
@@ -178,16 +187,6 @@ def _save_checkpoint(path: Path, state: TrainState, epoch: int, metrics: dict[st
     }
     with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-
-
-def _load_checkpoint_meta(path: Path) -> dict:
-    meta_path = path.with_suffix(".json")
-    if not meta_path.exists():
-        return {}
-    try:
-        return json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
 
 
 def _log_checkpoint_artifact(
@@ -280,8 +279,11 @@ def main() -> None:
             out_dir=Path(cfg.weights_path),
         )
         state_single = flax.serialization.from_bytes(state_single, resume_ckpt.read_bytes())
-        meta = _load_checkpoint_meta(resume_ckpt)
-        start_epoch = int(meta.get("epoch", 0)) + 1
+        start_epoch = _get_resume_epoch_from_wandb(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+            run_id=cfg.resume_run,
+        ) + 1
         print(f"resumed_checkpoint={resume_ckpt}")
         print(f"resumed_start_epoch={start_epoch}")
     state: TrainState = flax_jax_utils.replicate(state_single) if use_distributed else state_single

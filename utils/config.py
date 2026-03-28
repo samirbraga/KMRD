@@ -46,6 +46,11 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     weights_path: str = "./weights"
     save_every_epochs: int = 20
     train_log_every: int = 0
+    train_val: bool = True
+    val_freq: int = 1
+    start_eval_epoch: int = 1
+    val_log_every: int = 0
+    val_max_batches: int = 0
     distributed: bool = True
 
     wandb_entity: str = "rdem"

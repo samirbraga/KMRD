@@ -256,6 +256,32 @@ def make_train_step_pmap(cfg: ScoreTrainConfig):
     return jax.pmap(train_step, axis_name="data")
 
 
+def make_eval_step(cfg: ScoreTrainConfig):
+    def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+        rng, step_rng = jax.random.split(state.rng)
+        loss, aux = _score_loss(state.params, state.apply_fn, batch, step_rng, cfg)
+        metrics = dict(aux)
+        metrics["loss"] = loss
+        metrics["rng_next"] = rng
+        return metrics
+
+    return jax.jit(eval_step)
+
+
+def make_eval_step_pmap(cfg: ScoreTrainConfig):
+    def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+        rng, step_rng = jax.random.split(state.rng)
+        loss, aux = _score_loss(state.params, state.apply_fn, batch, step_rng, cfg)
+        loss = lax.pmean(loss, axis_name="data")
+        aux = lax.pmean(aux, axis_name="data")
+        metrics = dict(aux)
+        metrics["loss"] = loss
+        metrics["rng_next"] = rng
+        return metrics
+
+    return jax.pmap(eval_step, axis_name="data")
+
+
 def train_one_epoch(
     state: TrainState,
     train_batches: Iterable[dict[str, jnp.ndarray]],
@@ -343,6 +369,108 @@ def train_one_epoch_pmap(
 
     denom = max(n_steps, 1)
     return state, {
+        "loss": loss_sum / denom,
+        "g0_mean": g0_sum / denom,
+        "gt_mean": gt_sum / denom,
+        "sigma2_mean": sigma2_sum / denom,
+    }
+
+
+def eval_one_epoch(
+    state: TrainState,
+    eval_batches: Iterable[dict[str, jnp.ndarray]],
+    cfg: ScoreTrainConfig,
+    epoch: int | None = None,
+    log_every: int = 0,
+    max_batches: int = 0,
+    eval_step_fn: Any | None = None,
+) -> tuple[TrainState, dict[str, float]]:
+    eval_step = eval_step_fn if eval_step_fn is not None else make_eval_step(cfg)
+
+    loss_sum = 0.0
+    g0_sum = 0.0
+    gt_sum = 0.0
+    sigma2_sum = 0.0
+    n_steps = 0
+    cur_state = state
+
+    for batch in eval_batches:
+        metrics = eval_step(cur_state, batch)
+        cur_state = cur_state.replace(rng=metrics["rng_next"])
+        m_loss = float(metrics["loss"])
+        m_g0 = float(metrics["g0_mean"])
+        m_gt = float(metrics["gt_mean"])
+        m_s2 = float(metrics["sigma2_mean"])
+        loss_sum += m_loss
+        g0_sum += m_g0
+        gt_sum += m_gt
+        sigma2_sum += m_s2
+        n_steps += 1
+        if log_every > 0 and (n_steps % log_every == 0):
+            prefix = f"epoch={epoch:04d} " if epoch is not None else ""
+            print(
+                f"{prefix}val_step={n_steps:04d} "
+                f"val_loss={m_loss:.6f} "
+                f"g0={m_g0:.4f} "
+                f"gt={m_gt:.4f} "
+                f"sigma2={m_s2:.4f}"
+            )
+        if max_batches > 0 and n_steps >= max_batches:
+            break
+
+    denom = max(n_steps, 1)
+    return cur_state, {
+        "loss": loss_sum / denom,
+        "g0_mean": g0_sum / denom,
+        "gt_mean": gt_sum / denom,
+        "sigma2_mean": sigma2_sum / denom,
+    }
+
+
+def eval_one_epoch_pmap(
+    state: TrainState,
+    eval_batches: Iterable[dict[str, jnp.ndarray]],
+    cfg: ScoreTrainConfig,
+    epoch: int | None = None,
+    log_every: int = 0,
+    max_batches: int = 0,
+    eval_step_fn: Any | None = None,
+) -> tuple[TrainState, dict[str, float]]:
+    eval_step = eval_step_fn if eval_step_fn is not None else make_eval_step_pmap(cfg)
+
+    loss_sum = 0.0
+    g0_sum = 0.0
+    gt_sum = 0.0
+    sigma2_sum = 0.0
+    n_steps = 0
+    cur_state = state
+
+    for batch in eval_batches:
+        metrics = eval_step(cur_state, batch)
+        cur_state = cur_state.replace(rng=metrics["rng_next"])
+        m_loss = float(jax.device_get(metrics["loss"])[0])
+        m_g0 = float(jax.device_get(metrics["g0_mean"])[0])
+        m_gt = float(jax.device_get(metrics["gt_mean"])[0])
+        m_s2 = float(jax.device_get(metrics["sigma2_mean"])[0])
+        loss_sum += m_loss
+        g0_sum += m_g0
+        gt_sum += m_gt
+        sigma2_sum += m_s2
+        n_steps += 1
+        if log_every > 0 and (n_steps % log_every == 0):
+            prefix = f"epoch={epoch:04d} " if epoch is not None else ""
+            print(
+                f"{prefix}val_step={n_steps:04d} "
+                f"val_loss={m_loss:.6f} "
+                f"g0={m_g0:.4f} "
+                f"gt={m_gt:.4f} "
+                f"sigma2={m_s2:.4f}"
+            )
+        if max_batches > 0 and n_steps >= max_batches:
+            break
+
+    denom = max(n_steps, 1)
+    return cur_state, {
         "loss": loss_sum / denom,
         "g0_mean": g0_sum / denom,
         "gt_mean": gt_sum / denom,

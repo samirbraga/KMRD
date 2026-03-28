@@ -269,6 +269,9 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
 
     n_steps: int = 1000
     eps: float = 1e-3
+    pc_corrector_steps: int = 0
+    pc_corrector_step_scale: float = 1.0
+    pc_corrector_noise_scale: float = 1.0
     batch_size: int = 64
     samples_per_length: int = 10
     from_length: int = 50
@@ -372,19 +375,15 @@ def _sample_batch(
     ts = jnp.linspace(1.0 - cfg.eps, 0.0 + cfg.eps, cfg.n_steps, dtype=jnp.float32)
     sigma2_max = jnp.clip(_sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
 
-    def _body(k: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
-        x, rng_loop = carry
-        t = ts[k]
-        t_next = ts[k + 1]
-        dt = jnp.abs(t - t_next)
-        vec_t = jnp.full((bsz,), t, dtype=jnp.float32)
-        beta_t = _beta_t(vec_t, cfg.beta_0, cfg.beta_f)
-        sigma2_t = jnp.clip(_sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
-
+    def _score_and_preconditioner(
+        x_cur: jnp.ndarray,
+        vec_t: jnp.ndarray,
+        sigma2_t: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         g_diag = None
         sigma_diag = jnp.ones_like(mask)
         if cfg.metric_type == "kinetic_diag":
-            angles, lengths = _to_angles_lengths(x, mask)
+            angles, lengths = _to_angles_lengths(x_cur, mask)
             g_diag = compute_kinetic_metric_diag(
                 angles_batch=angles,
                 lengths=lengths,
@@ -409,7 +408,7 @@ def _sample_batch(
 
         eps_pred = model.apply(
             {"params": params},
-            inputs=x,
+            inputs=x_cur,
             timestep=vec_t,
             mask=mask,
             manifold=None,
@@ -420,12 +419,39 @@ def _sample_batch(
             score = -jnp.sqrt(jnp.clip(g_diag, a_min=1e-8)) * eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
         else:
             score = -eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
+        return score, sigma_diag
+
+    def _body(k: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+        x, rng_loop = carry
+        t = ts[k]
+        t_next = ts[k + 1]
+        dt = jnp.abs(t - t_next)
+        vec_t = jnp.full((bsz,), t, dtype=jnp.float32)
+        beta_t = _beta_t(vec_t, cfg.beta_0, cfg.beta_f)
+        sigma2_t = jnp.clip(_sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
+        score, sigma_diag = _score_and_preconditioner(x, vec_t, sigma2_t)
 
         rng_loop, rng_noise = jax.random.split(rng_loop)
         noise = jax.random.normal(rng_noise, x.shape, dtype=x.dtype) * mask
         drift = 2.0 * dt * beta_t[:, None] * sigma_diag * score
         diff = jnp.sqrt(2.0 * dt * beta_t)[:, None] * jnp.sqrt(sigma_diag) * noise
         x_next = _wrap_to_pi(x + drift + diff) * mask
+
+        if cfg.pc_corrector_steps > 0:
+            corr_dt = (cfg.pc_corrector_step_scale * dt) / float(cfg.pc_corrector_steps)
+            corr_dt = jnp.clip(corr_dt, a_min=1e-8)
+
+            def _corr_body(_: int, corr_carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+                x_corr, rng_corr = corr_carry
+                score_corr, sigma_diag_corr = _score_and_preconditioner(x_corr, vec_t, sigma2_t)
+                rng_corr, rng_corr_noise = jax.random.split(rng_corr)
+                corr_noise = jax.random.normal(rng_corr_noise, x_corr.shape, dtype=x_corr.dtype) * mask
+                corr_drift = corr_dt * beta_t[:, None] * sigma_diag_corr * score_corr
+                corr_diff = jnp.sqrt(2.0 * corr_dt * cfg.pc_corrector_noise_scale) * jnp.sqrt(sigma_diag_corr) * corr_noise
+                x_corr_next = _wrap_to_pi(x_corr + corr_drift + corr_diff) * mask
+                return x_corr_next, rng_corr
+
+            x_next, rng_loop = lax.fori_loop(0, cfg.pc_corrector_steps, _corr_body, (x_next, rng_loop))
         return (x_next, rng_loop)
 
     x_fin, _ = lax.fori_loop(0, cfg.n_steps - 1, _body, (x0, rng))
@@ -466,6 +492,11 @@ def main() -> None:
     )
 
     total_batches = (len(lengths_arr) + cfg.batch_size - 1) // cfg.batch_size
+    print(
+        f"sampler_cfg metric={cfg.metric_type} n_steps={cfg.n_steps} "
+        f"pc_steps={cfg.pc_corrector_steps} pc_step_scale={cfg.pc_corrector_step_scale} "
+        f"pc_noise_scale={cfg.pc_corrector_noise_scale}"
+    )
     print(f"sampling_start total_samples={len(lengths_arr)} batch_size={cfg.batch_size} total_batches={total_batches}")
     for batch_idx, start in enumerate(range(0, len(lengths_arr), cfg.batch_size), start=1):
         batch_lengths = lengths_arr[start : start + cfg.batch_size]

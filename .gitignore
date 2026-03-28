@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+data/cath/**/*
+.vscode/
+results/
+foldingdiff/cache_*
+
+.env
+
+wandb/
+weights/
+samples/
+plots/
+proteinmpnn_residues/
+ProteinMPNN/
+omegafold_predictions/
+sampled_pdb/
+
+.ipynb_checkpoints
+logs/
+.codex

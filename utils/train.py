@@ -61,6 +61,13 @@ class ScoreTrainConfig:
     metric_type: Literal["kinetic_diag", "flat_torus"] = "kinetic_diag"
     metric_cutoff: float = 10.0
     metric_eps: float = 1e-3
+    metric_normalize: bool = True
+    metric_clamp_min: float = 1e-3
+    metric_clamp_max: float | None = None
+    metric_anneal: bool = True
+    metric_anneal_data_lambda: float = 0.0
+    metric_anneal_prior_lambda: float = 1.0
+    metric_anneal_power: float = 1.0
     beta_0: float = 10.0
     beta_f: float = 0.1
     t_eps: float = 1e-5
@@ -113,7 +120,25 @@ def _compute_metric_diag(
         geo_mask=mask,
         cutoff=cfg.metric_cutoff,
         eps=cfg.metric_eps,
+        normalize=cfg.metric_normalize,
+        clamp_min=cfg.metric_clamp_min,
+        clamp_max=cfg.metric_clamp_max,
     )
+
+
+def _metric_anneal_lambda_from_sigma2(
+    sigma2: jnp.ndarray,
+    sigma2_max: jnp.ndarray,
+    cfg: ScoreTrainConfig,
+) -> jnp.ndarray:
+    if not cfg.metric_anneal:
+        return jnp.ones_like(sigma2)
+    u = jnp.clip(sigma2 / jnp.clip(sigma2_max, a_min=1e-8), a_min=0.0, a_max=1.0)
+    u = jnp.power(u, cfg.metric_anneal_power)
+    lam = cfg.metric_anneal_data_lambda + (
+        cfg.metric_anneal_prior_lambda - cfg.metric_anneal_data_lambda
+    ) * u
+    return jnp.clip(lam, a_min=0.0, a_max=1.0)
 
 
 def _score_loss(
@@ -134,9 +159,15 @@ def _score_loss(
     rng_t, rng_eps, rng_dropout = jax.random.split(rng, 3)
     t = jax.random.uniform(rng_t, (bsz,), minval=cfg.t_eps, maxval=1.0 - cfg.t_eps)
     sigma2 = jnp.clip(_sigma2_linear(t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
+    sigma2_max = jnp.clip(
+        _sigma2_linear(jnp.ones_like(t), cfg.beta_0, cfg.beta_f),
+        a_min=1e-8,
+    )
+    anneal_lambda = _metric_anneal_lambda_from_sigma2(sigma2, sigma2_max, cfg)
 
     g_diag_0 = _compute_metric_diag(x0, mask, cfg)
     g_diag_0 = jnp.nan_to_num(g_diag_0, nan=1.0, posinf=1e6, neginf=1.0)
+    g_diag_0 = (1.0 - anneal_lambda[:, None]) + anneal_lambda[:, None] * g_diag_0
     sigma_diag_0 = jnp.clip(1.0 / g_diag_0, a_min=1e-8)
 
     eps_noise = jax.random.normal(rng_eps, x0.shape, dtype=x0.dtype) * mask
@@ -145,6 +176,7 @@ def _score_loss(
 
     g_diag_t = _compute_metric_diag(theta_t, mask, cfg)
     g_diag_t = jnp.nan_to_num(g_diag_t, nan=1.0, posinf=1e6, neginf=1.0)
+    g_diag_t = (1.0 - anneal_lambda[:, None]) + anneal_lambda[:, None] * g_diag_t
     sigma_diag_t = jnp.clip(1.0 / g_diag_t, a_min=1e-8)
 
     dtheta_raw = theta_t - x0

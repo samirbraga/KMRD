@@ -162,7 +162,7 @@ def compute_kinetic_metric_diag(
         Behavior intentionally matches the active torch implementation, where
         normalization/clamping and geo_mask reweighting are currently disabled.
     """
-    del geo_mask, normalize
+    geo_mask_f = None if geo_mask is None else jnp.asarray(geo_mask, dtype=jnp.float32)
     g_diag, _ = compute_contact_proxy_metric_batch(
         angles_batch=angles_batch,
         lengths=lengths,
@@ -171,5 +171,15 @@ def compute_kinetic_metric_diag(
         kin_batch=kin_batch,
     )
     g_diag = jnp.nan_to_num(g_diag, nan=1.0, posinf=1e6, neginf=1.0)
+    if normalize:
+        if geo_mask_f is not None:
+            denom = jnp.clip(jnp.sum(geo_mask_f, axis=-1, keepdims=True), a_min=1.0)
+            mean_g = jnp.sum(g_diag * geo_mask_f, axis=-1, keepdims=True) / denom
+        else:
+            mean_g = jnp.mean(g_diag, axis=-1, keepdims=True)
+        g_diag = g_diag / jnp.clip(mean_g, a_min=1e-8)
     g_diag = jnp.clip(g_diag, a_min=clamp_min, a_max=(jnp.inf if clamp_max is None else clamp_max))
+    if geo_mask_f is not None:
+        # Keep padded dimensions neutral under diagonal weighting.
+        g_diag = g_diag * geo_mask_f + (1.0 - geo_mask_f)
     return g_diag

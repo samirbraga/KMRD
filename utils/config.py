@@ -14,6 +14,10 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     batch_size: int = 32
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
+    lr_sched: bool = False
+    lr_schedule_type: Literal["cosine", "linear"] = "cosine"
+    lr_warmup_frac: float = 0.1
+    min_lr_ratio: float = 0.1
     seed: int = 42
 
     max_seq_len: int = 128

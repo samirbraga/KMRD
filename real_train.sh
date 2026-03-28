@@ -1,0 +1,24 @@
+TF_CPP_MIN_LOG_LEVEL=3 uv run python train.py \
+    --metric-type flat_torus \
+    --metric-condition-model false \
+    --toy 0 \
+    --epochs 1000 \
+    --batch-size 128 \
+    --net-size 3 \
+    --learning-rate 3e-5 \
+    --weight-decay 1e-2 \
+    --dropout 0.1 \
+    --max-seq-len 128 \
+    --min-seq-len 40 \
+    --dataset-workers 1 \
+    --distributed true \
+    --save-every-epochs 10 \
+    --val-freq 10 \
+    --weights-path ./weights_flat_full \
+    --wandb-run-name flat_full_ns3_b128_2 \
+    --wandb-mode online \
+    --best-metric val_kl \
+    --lr-sched true \
+    --lr-schedule-type cosine \
+    --lr-warmup-frac 0.1 \
+    --min-lr-ratio 0.1

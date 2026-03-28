@@ -11,21 +11,14 @@ import flax.jax_utils as flax_jax_utils
 import flax.serialization
 import jax
 import jax.numpy as jnp
-from jax import lax
 import numpy as np
+import optax
 import wandb
 
-from diffgeo.kinetic_metric import compute_kinetic_metric_diag
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from utils.config import TrainConfig
-from utils.diffusion_math import (
-    beta_t_linear,
-    metric_anneal_lambda_from_sigma2,
-    sigma2_linear,
-    to_angles_lengths,
-    wrap_to_pi,
-)
+from utils.sampling import sample_intrinsic_batch
 from utils.train import (
     eval_one_epoch,
     eval_one_epoch_pmap,
@@ -47,6 +40,46 @@ from utils.wandb import (
     load_config_from_resumed_run,
     log_checkpoint_artifact,
 )
+
+
+def _build_learning_rate_schedule(
+    cfg: TrainConfig,
+    *,
+    total_steps: int,
+) -> float | optax.Schedule:
+    if not cfg.lr_sched:
+        return float(cfg.learning_rate)
+
+    total_steps = max(1, int(total_steps))
+    warmup_steps = int(max(0, cfg.lr_warmup_frac) * total_steps)
+    decay_steps = max(1, total_steps - warmup_steps)
+    min_lr = float(cfg.learning_rate) * float(cfg.min_lr_ratio)
+
+    if cfg.lr_schedule_type == "linear":
+        decay_sched = optax.linear_schedule(
+            init_value=float(cfg.learning_rate),
+            end_value=min_lr,
+            transition_steps=decay_steps,
+        )
+    else:
+        decay_sched = optax.cosine_decay_schedule(
+            init_value=float(cfg.learning_rate),
+            decay_steps=decay_steps,
+            alpha=float(cfg.min_lr_ratio),
+        )
+
+    if warmup_steps <= 0:
+        return decay_sched
+
+    warmup_sched = optax.linear_schedule(
+        init_value=0.0,
+        end_value=float(cfg.learning_rate),
+        transition_steps=max(1, warmup_steps),
+    )
+    return optax.join_schedules(
+        schedules=[warmup_sched, decay_sched],
+        boundaries=[warmup_steps],
+    )
 
 
 def _decode_sample_to_angles(x: np.ndarray, length: int, n_feats: int = 6) -> np.ndarray:
@@ -93,71 +126,27 @@ def _sample_batch_eval(
     cfg: TrainConfig,
     rng: jax.Array,
 ) -> jnp.ndarray:
-    bsz, _ = mask.shape
-    rng, rng_init = jax.random.split(rng)
-    x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
-
-    ts = jnp.linspace(1.0 - cfg.val_kl_eps, 0.0 + cfg.val_kl_eps, cfg.val_kl_n_steps, dtype=jnp.float32)
-    sigma2_max = jnp.clip(sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
-
-    def _body(k: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
-        x, rng_loop = carry
-        t = ts[k]
-        t_next = ts[k + 1]
-        dt = jnp.abs(t - t_next)
-        vec_t = jnp.full((bsz,), t, dtype=jnp.float32)
-        beta_t = beta_t_linear(vec_t, cfg.beta_0, cfg.beta_f)
-        sigma2_t = jnp.clip(sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
-
-        g_diag = None
-        sigma_diag = jnp.ones_like(mask)
-        if cfg.metric_type == "kinetic_diag":
-            angles, lengths = to_angles_lengths(x, mask)
-            g_diag = compute_kinetic_metric_diag(
-                angles_batch=angles,
-                lengths=lengths,
-                geo_mask=mask,
-                cutoff=cfg.metric_cutoff,
-                eps=cfg.metric_eps,
-                normalize=cfg.metric_normalize,
-                clamp_min=cfg.metric_clamp_min,
-                clamp_max=cfg.metric_clamp_max,
-            )
-            lam = metric_anneal_lambda_from_sigma2(
-                sigma2=sigma2_t,
-                sigma2_max=sigma2_max,
-                enabled=cfg.metric_anneal,
-                data_lambda=cfg.metric_anneal_data_lambda,
-                prior_lambda=cfg.metric_anneal_prior_lambda,
-                power=cfg.metric_anneal_power,
-            )
-            g_diag = (1.0 - lam[:, None]) + lam[:, None] * g_diag
-            g_diag = jnp.nan_to_num(g_diag, nan=1.0, posinf=1e6, neginf=1.0)
-            sigma_diag = jnp.clip(1.0 / g_diag, a_min=1e-8)
-
-        eps_pred = model.apply(
-            {"params": params},
-            inputs=x,
-            timestep=vec_t,
-            mask=mask,
-            manifold=None,
-            g_diag=(g_diag if cfg.metric_type == "kinetic_diag" else None),
-            deterministic=True,
-        )
-        if cfg.metric_type == "kinetic_diag":
-            score = -jnp.sqrt(jnp.clip(g_diag, a_min=1e-8)) * eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
-        else:
-            score = -eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
-
-        rng_loop, rng_noise = jax.random.split(rng_loop)
-        noise = jax.random.normal(rng_noise, x.shape, dtype=x.dtype) * mask
-        drift = 2.0 * dt * beta_t[:, None] * sigma_diag * score
-        diff = jnp.sqrt(2.0 * dt * beta_t)[:, None] * jnp.sqrt(sigma_diag) * noise
-        x_next = wrap_to_pi(x + drift + diff) * mask
-        return (x_next, rng_loop)
-
-    x_fin, _ = lax.fori_loop(0, cfg.val_kl_n_steps - 1, _body, (x0, rng))
-    return x_fin
+    return sample_intrinsic_batch(
+        params=params,
+        model=model,
+        mask=mask,
+        rng=rng,
+        n_steps=cfg.val_kl_n_steps,
+        eps=cfg.val_kl_eps,
+        beta_0=cfg.beta_0,
+        beta_f=cfg.beta_f,
+        metric_type=cfg.metric_type,
+        metric_cutoff=cfg.metric_cutoff,
+        metric_eps=cfg.metric_eps,
+        metric_normalize=cfg.metric_normalize,
+        metric_clamp_min=cfg.metric_clamp_min,
+        metric_clamp_max=cfg.metric_clamp_max,
+        metric_anneal=cfg.metric_anneal,
+        metric_anneal_data_lambda=cfg.metric_anneal_data_lambda,
+        metric_anneal_prior_lambda=cfg.metric_anneal_prior_lambda,
+        metric_anneal_power=cfg.metric_anneal_power,
+        pc_corrector_steps=0,
+    )
 
 def _batch_iter(
     dataset: CathCanonicalAnglesOnlyDataset,
@@ -220,7 +209,6 @@ def _save_checkpoint(path: Path, state: TrainState, epoch: int, metrics: dict[st
 def _compute_val_kl(
     *,
     params,
-    model: BertForDiffusion,
     cfg: TrainConfig,
     reference_angles: np.ndarray,
     val_lengths: np.ndarray,
@@ -325,12 +313,18 @@ def main() -> None:
 
     init_batch = next(_batch_iter(train_ds, batch_size=min(cfg.batch_size, len(train_ds)), rng=np_rng, shuffle=False))
     sample_x = init_batch["angles"][:, :-1, :].reshape(init_batch["angles"].shape[0], -1)
+    if use_distributed:
+        steps_per_epoch = len(train_ds) // cfg.batch_size
+    else:
+        steps_per_epoch = (len(train_ds) + cfg.batch_size - 1) // cfg.batch_size
+    total_steps = max(1, steps_per_epoch * cfg.epochs)
+    learning_rate = _build_learning_rate_schedule(cfg, total_steps=total_steps)
     state_single = create_train_state(
         model=model,
         rng=jax_rng,
         sample_x=sample_x,
         sample_mask=init_batch["geo_mask"],
-        learning_rate=cfg.learning_rate,
+        learning_rate=learning_rate,
         weight_decay=cfg.weight_decay,
     )
     start_epoch = 1
@@ -377,7 +371,8 @@ def main() -> None:
     print(
         f"Training start: n_train={len(train_ds)} n_val={len(val_ds)} batch={cfg.batch_size} "
         f"metric={cfg.metric_type} cond_g={model_cfg.condition_on_g_diag} "
-        f"devices={n_devices} distributed={use_distributed}"
+        f"devices={n_devices} distributed={use_distributed} "
+        f"lr_sched={cfg.lr_sched} lr_type={cfg.lr_schedule_type if cfg.lr_sched else 'constant'}"
     )
     train_step_fn = make_train_step_pmap(loss_cfg) if use_distributed else make_train_step(loss_cfg)
     eval_step_fn = make_eval_step_pmap(loss_cfg) if use_distributed else make_eval_step(loss_cfg)
@@ -488,7 +483,6 @@ def main() -> None:
                 )
                 val_kl = _compute_val_kl(
                     params=params_for_sampling,
-                    model=model,
                     cfg=cfg,
                     reference_angles=val_ref_angles,
                     val_lengths=val_ref_lengths,

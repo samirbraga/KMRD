@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -10,12 +11,21 @@ import flax.jax_utils as flax_jax_utils
 import flax.serialization
 import jax
 import jax.numpy as jnp
+from jax import lax
 import numpy as np
 import wandb
 
+from diffgeo.kinetic_metric import compute_kinetic_metric_diag
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from utils.config import TrainConfig
+from utils.diffusion_math import (
+    beta_t_linear,
+    metric_anneal_lambda_from_sigma2,
+    sigma2_linear,
+    to_angles_lengths,
+    wrap_to_pi,
+)
 from utils.train import (
     eval_one_epoch,
     eval_one_epoch_pmap,
@@ -31,12 +41,123 @@ from utils.train import (
 )
 from utils.wandb import (
     download_wandb_checkpoint,
+    get_best_scalar_from_wandb,
     get_best_val_loss_from_wandb,
     get_resume_epoch_from_wandb,
     load_config_from_resumed_run,
     log_checkpoint_artifact,
 )
 
+
+def _decode_sample_to_angles(x: np.ndarray, length: int, n_feats: int = 6) -> np.ndarray:
+    n = int((length - 1) * n_feats)
+    vals = x[:n]
+    vals = np.pad(vals, (1, n_feats - 1), mode="constant", constant_values=0.0)
+    return vals.reshape(-1, n_feats).astype(np.float32, copy=False)
+
+
+def _collect_reference_angles(
+    dataset: CathCanonicalAnglesOnlyDataset,
+    limit: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    stacked: list[np.ndarray] = []
+    lengths: list[int] = []
+    n = len(dataset) if limit <= 0 else min(len(dataset), limit)
+    for i in range(n):
+        item = dataset[i]
+        lengths.append(int(item["lengths"]))
+        angles = item["angles"][:-1, :]
+        mask = item["geo_mask"].reshape(-1, 6).astype(bool)
+        valid_rows = mask.all(axis=1)
+        if np.any(valid_rows):
+            stacked.append(angles[valid_rows].astype(np.float32, copy=False))
+    if not stacked:
+        raise RuntimeError("Validation reference is empty.")
+    return np.concatenate(stacked, axis=0), np.asarray(lengths, dtype=np.int32)
+
+
+def _kl_from_empirical(sampled: np.ndarray, reference: np.ndarray, nbins: int) -> float:
+    hist_s, edges = np.histogram(sampled, bins=nbins, range=(-math.pi, math.pi), density=False)
+    hist_r, _ = np.histogram(reference, bins=edges, density=False)
+    p = hist_s.astype(np.float64) + 1.0
+    q = hist_r.astype(np.float64) + 1.0
+    p /= np.sum(p)
+    q /= np.sum(q)
+    return float(np.sum(p * np.log(p / q)))
+
+
+def _sample_batch_eval(
+    params,
+    model: BertForDiffusion,
+    mask: jnp.ndarray,
+    cfg: TrainConfig,
+    rng: jax.Array,
+) -> jnp.ndarray:
+    bsz, _ = mask.shape
+    rng, rng_init = jax.random.split(rng)
+    x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
+
+    ts = jnp.linspace(1.0 - cfg.val_kl_eps, 0.0 + cfg.val_kl_eps, cfg.val_kl_n_steps, dtype=jnp.float32)
+    sigma2_max = jnp.clip(sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
+
+    def _body(k: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+        x, rng_loop = carry
+        t = ts[k]
+        t_next = ts[k + 1]
+        dt = jnp.abs(t - t_next)
+        vec_t = jnp.full((bsz,), t, dtype=jnp.float32)
+        beta_t = beta_t_linear(vec_t, cfg.beta_0, cfg.beta_f)
+        sigma2_t = jnp.clip(sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
+
+        g_diag = None
+        sigma_diag = jnp.ones_like(mask)
+        if cfg.metric_type == "kinetic_diag":
+            angles, lengths = to_angles_lengths(x, mask)
+            g_diag = compute_kinetic_metric_diag(
+                angles_batch=angles,
+                lengths=lengths,
+                geo_mask=mask,
+                cutoff=cfg.metric_cutoff,
+                eps=cfg.metric_eps,
+                normalize=cfg.metric_normalize,
+                clamp_min=cfg.metric_clamp_min,
+                clamp_max=cfg.metric_clamp_max,
+            )
+            lam = metric_anneal_lambda_from_sigma2(
+                sigma2=sigma2_t,
+                sigma2_max=sigma2_max,
+                enabled=cfg.metric_anneal,
+                data_lambda=cfg.metric_anneal_data_lambda,
+                prior_lambda=cfg.metric_anneal_prior_lambda,
+                power=cfg.metric_anneal_power,
+            )
+            g_diag = (1.0 - lam[:, None]) + lam[:, None] * g_diag
+            g_diag = jnp.nan_to_num(g_diag, nan=1.0, posinf=1e6, neginf=1.0)
+            sigma_diag = jnp.clip(1.0 / g_diag, a_min=1e-8)
+
+        eps_pred = model.apply(
+            {"params": params},
+            inputs=x,
+            timestep=vec_t,
+            mask=mask,
+            manifold=None,
+            g_diag=(g_diag if cfg.metric_type == "kinetic_diag" else None),
+            deterministic=True,
+        )
+        if cfg.metric_type == "kinetic_diag":
+            score = -jnp.sqrt(jnp.clip(g_diag, a_min=1e-8)) * eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
+        else:
+            score = -eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
+
+        rng_loop, rng_noise = jax.random.split(rng_loop)
+        noise = jax.random.normal(rng_noise, x.shape, dtype=x.dtype) * mask
+        drift = 2.0 * dt * beta_t[:, None] * sigma_diag * score
+        diff = jnp.sqrt(2.0 * dt * beta_t)[:, None] * jnp.sqrt(sigma_diag) * noise
+        x_next = wrap_to_pi(x + drift + diff) * mask
+        return (x_next, rng_loop)
+
+    x_fin, _ = lax.fori_loop(0, cfg.val_kl_n_steps - 1, _body, (x0, rng))
+    return x_fin
 
 def _batch_iter(
     dataset: CathCanonicalAnglesOnlyDataset,
@@ -96,6 +217,47 @@ def _save_checkpoint(path: Path, state: TrainState, epoch: int, metrics: dict[st
         json.dump(meta, f, indent=2)
 
 
+def _compute_val_kl(
+    *,
+    params,
+    model: BertForDiffusion,
+    cfg: TrainConfig,
+    reference_angles: np.ndarray,
+    val_lengths: np.ndarray,
+    epoch: int,
+    sample_fn,
+) -> float:
+    if cfg.val_kl_samples <= 0:
+        return float("inf")
+    d = 6 * (cfg.max_seq_len - 1)
+    rng_np = np.random.default_rng(cfg.seed + 1009 * epoch)
+    sampled_lengths = rng_np.choice(val_lengths, size=cfg.val_kl_samples, replace=True)
+
+    rng_jax = jax.random.PRNGKey(cfg.seed + 811 * epoch)
+    generated: list[np.ndarray] = []
+    bs = max(1, int(cfg.val_kl_batch_size))
+
+    for start in range(0, cfg.val_kl_samples, bs):
+        batch_lengths = sampled_lengths[start : start + bs]
+        b = len(batch_lengths)
+        mask = np.zeros((bs, d), dtype=np.float32)
+        for i, length_i in enumerate(batch_lengths):
+            mask[i, : (int(length_i) - 1) * 6] = 1.0
+        rng_jax, step_rng = jax.random.split(rng_jax)
+        x = sample_fn(params, jnp.asarray(mask), step_rng)
+        x_np = np.asarray(jax.device_get(x), dtype=np.float32)[:b]
+        for i in range(b):
+            angles = _decode_sample_to_angles(x_np[i], int(batch_lengths[i]), n_feats=6)
+            generated.append(angles)
+
+    sampled_angles = np.concatenate(generated, axis=0)
+    kl_vals = [
+        _kl_from_empirical(sampled_angles[:, i], reference_angles[:, i], nbins=int(cfg.val_kl_bins))
+        for i in range(6)
+    ]
+    return float(np.mean(kl_vals))
+
+
 def main() -> None:
     cfg = load_config_from_resumed_run(TrainConfig())
     np_rng = np.random.default_rng(cfg.seed)
@@ -137,6 +299,12 @@ def main() -> None:
         use_cache=True,
         num_workers=cfg.dataset_workers,
     )
+    val_ref_angles = None
+    val_ref_lengths = None
+    if cfg.val_kl_enable and len(val_ds) > 0:
+        val_ref_angles, val_ref_lengths = _collect_reference_angles(
+            val_ds, limit=cfg.val_kl_ref_limit
+        )
 
     model_cfg = BertDiffusionConfig(
         num_attention_heads=cfg.net_size * 4,
@@ -213,12 +381,28 @@ def main() -> None:
     )
     train_step_fn = make_train_step_pmap(loss_cfg) if use_distributed else make_train_step(loss_cfg)
     eval_step_fn = make_eval_step_pmap(loss_cfg) if use_distributed else make_eval_step(loss_cfg)
+    val_sample_fn = jax.jit(
+        lambda p, m, r: _sample_batch_eval(
+            params=p,
+            model=model,
+            mask=m,
+            cfg=cfg,
+            rng=r,
+        )
+    )
 
     best_val_loss = (
         get_best_val_loss_from_wandb(cfg.wandb_entity, cfg.wandb_project, cfg.resume_run)
         if cfg.resume_run
         else float("inf")
     )
+    best_val_kl = (
+        get_best_scalar_from_wandb(cfg.wandb_entity, cfg.wandb_project, cfg.resume_run, "best_val_kl")
+        if cfg.resume_run
+        else float("inf")
+    )
+    if cfg.best_metric == "val_kl" and not cfg.val_kl_enable:
+        raise ValueError("best_metric=val_kl requires val_kl_enable=true")
     for epoch in range(start_epoch, cfg.epochs + 1):
         if use_distributed:
             batches = _batch_iter_sharded(
@@ -251,6 +435,7 @@ def main() -> None:
             f"g0={metrics['g0_mean']:.4f} gt={metrics['gt_mean']:.4f} sigma2={metrics['sigma2_mean']:.4f}"
         )
         val_metrics = None
+        val_kl = None
         should_eval = bool(
             cfg.train_val
             and len(val_ds) > 0
@@ -297,9 +482,32 @@ def main() -> None:
                 f"val_gt={val_metrics['gt_mean']:.4f} "
                 f"val_sigma2={val_metrics['sigma2_mean']:.4f}"
             )
-        is_best = bool(val_metrics is not None and float(val_metrics["loss"]) < best_val_loss)
-        if is_best and val_metrics is not None:
+            if cfg.val_kl_enable and val_ref_angles is not None and val_ref_lengths is not None:
+                params_for_sampling = (
+                    flax_jax_utils.unreplicate(state).params if use_distributed else state.params
+                )
+                val_kl = _compute_val_kl(
+                    params=params_for_sampling,
+                    model=model,
+                    cfg=cfg,
+                    reference_angles=val_ref_angles,
+                    val_lengths=val_ref_lengths,
+                    epoch=epoch,
+                    sample_fn=val_sample_fn,
+                )
+                print(f"epoch={epoch:04d} val_kl={val_kl:.6f}")
+
+        improved_val_loss = bool(val_metrics is not None and float(val_metrics["loss"]) < best_val_loss)
+        if improved_val_loss and val_metrics is not None:
             best_val_loss = float(val_metrics["loss"])
+        improved_val_kl = bool(val_kl is not None and val_kl < best_val_kl)
+        if improved_val_kl and val_kl is not None:
+            best_val_kl = float(val_kl)
+
+        if cfg.best_metric == "val_kl":
+            is_best = improved_val_kl
+        else:
+            is_best = improved_val_loss
 
         if wandb_run is not None:
             payload = {
@@ -318,6 +526,9 @@ def main() -> None:
                     }
                 )
                 payload["best_val_loss"] = best_val_loss
+            if val_kl is not None:
+                payload["val_kl"] = val_kl
+                payload["best_val_kl"] = best_val_kl
             wandb_run.log(payload, step=epoch)
 
         if cfg.save_every_epochs > 0 and (epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs):

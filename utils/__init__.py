@@ -14,6 +14,7 @@ from .train import (
 )
 from .wandb import (
     download_wandb_checkpoint,
+    get_best_scalar_from_wandb,
     get_best_val_loss_from_wandb,
     get_resume_epoch_from_wandb,
     load_config_from_resumed_run,
@@ -30,6 +31,7 @@ __all__ = [
     "TrainState",
     "create_train_state",
     "download_wandb_checkpoint",
+    "get_best_scalar_from_wandb",
     "get_best_val_loss_from_wandb",
     "get_resume_epoch_from_wandb",
     "load_config_from_resumed_run",

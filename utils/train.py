@@ -12,29 +12,12 @@ from jax import lax
 from flax.training import train_state
 
 from diffgeo.kinetic_metric import compute_kinetic_metric_diag
-
-
-def _wrap_to_pi(x: jnp.ndarray) -> jnp.ndarray:
-    return jnp.arctan2(jnp.sin(x), jnp.cos(x))
-
-
-def _to_angles_lengths(x: jnp.ndarray, mask: jnp.ndarray, n_feats: int = 6) -> tuple[jnp.ndarray, jnp.ndarray]:
-    bsz, d = x.shape
-    if d % n_feats != 0:
-        raise ValueError(f"Intrinsic dimension {d} is not divisible by n_feats={n_feats}.")
-    pad_minus_1 = d // n_feats
-    pad = pad_minus_1 + 1
-    angles = jnp.zeros((bsz, pad, n_feats), dtype=x.dtype).at[:, :pad_minus_1, :].set(
-        x.reshape(bsz, pad_minus_1, n_feats)
-    )
-    valid = jnp.sum(mask, axis=-1)
-    lengths = jnp.clip((valid / n_feats).astype(jnp.int32) + 1, a_min=1, a_max=pad)
-    return angles, lengths
-
-
-def _sigma2_linear(t: jnp.ndarray, beta_0: float, beta_f: float) -> jnp.ndarray:
-    # Integral of beta(s) = beta_0 + (beta_f - beta_0) * s over [0, t].
-    return beta_0 * t + 0.5 * (beta_f - beta_0) * (t * t)
+from utils.diffusion_math import (
+    metric_anneal_lambda_from_sigma2,
+    sigma2_linear,
+    to_angles_lengths,
+    wrap_to_pi,
+)
 
 
 def _wrapped_eps_target(
@@ -113,7 +96,7 @@ def _compute_metric_diag(
 ) -> jnp.ndarray:
     if cfg.metric_type == "flat_torus":
         return jnp.ones_like(theta)
-    angles, lengths = _to_angles_lengths(theta, mask)
+    angles, lengths = to_angles_lengths(theta, mask)
     return compute_kinetic_metric_diag(
         angles_batch=angles,
         lengths=lengths,
@@ -124,21 +107,6 @@ def _compute_metric_diag(
         clamp_min=cfg.metric_clamp_min,
         clamp_max=cfg.metric_clamp_max,
     )
-
-
-def _metric_anneal_lambda_from_sigma2(
-    sigma2: jnp.ndarray,
-    sigma2_max: jnp.ndarray,
-    cfg: ScoreTrainConfig,
-) -> jnp.ndarray:
-    if not cfg.metric_anneal:
-        return jnp.ones_like(sigma2)
-    u = jnp.clip(sigma2 / jnp.clip(sigma2_max, a_min=1e-8), a_min=0.0, a_max=1.0)
-    u = jnp.power(u, cfg.metric_anneal_power)
-    lam = cfg.metric_anneal_data_lambda + (
-        cfg.metric_anneal_prior_lambda - cfg.metric_anneal_data_lambda
-    ) * u
-    return jnp.clip(lam, a_min=0.0, a_max=1.0)
 
 
 def _score_loss(
@@ -158,12 +126,19 @@ def _score_loss(
     bsz = x0.shape[0]
     rng_t, rng_eps, rng_dropout = jax.random.split(rng, 3)
     t = jax.random.uniform(rng_t, (bsz,), minval=cfg.t_eps, maxval=1.0 - cfg.t_eps)
-    sigma2 = jnp.clip(_sigma2_linear(t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
+    sigma2 = jnp.clip(sigma2_linear(t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
     sigma2_max = jnp.clip(
-        _sigma2_linear(jnp.ones_like(t), cfg.beta_0, cfg.beta_f),
+        sigma2_linear(jnp.ones_like(t), cfg.beta_0, cfg.beta_f),
         a_min=1e-8,
     )
-    anneal_lambda = _metric_anneal_lambda_from_sigma2(sigma2, sigma2_max, cfg)
+    anneal_lambda = metric_anneal_lambda_from_sigma2(
+        sigma2=sigma2,
+        sigma2_max=sigma2_max,
+        enabled=cfg.metric_anneal,
+        data_lambda=cfg.metric_anneal_data_lambda,
+        prior_lambda=cfg.metric_anneal_prior_lambda,
+        power=cfg.metric_anneal_power,
+    )
 
     g_diag_0 = _compute_metric_diag(x0, mask, cfg)
     g_diag_0 = jnp.nan_to_num(g_diag_0, nan=1.0, posinf=1e6, neginf=1.0)
@@ -172,7 +147,7 @@ def _score_loss(
 
     eps_noise = jax.random.normal(rng_eps, x0.shape, dtype=x0.dtype) * mask
     scale = jnp.sqrt(2.0 * sigma2)[:, None]
-    theta_t = _wrap_to_pi(x0 + scale * jnp.sqrt(sigma_diag_0) * eps_noise) * mask
+    theta_t = wrap_to_pi(x0 + scale * jnp.sqrt(sigma_diag_0) * eps_noise) * mask
 
     g_diag_t = _compute_metric_diag(theta_t, mask, cfg)
     g_diag_t = jnp.nan_to_num(g_diag_t, nan=1.0, posinf=1e6, neginf=1.0)

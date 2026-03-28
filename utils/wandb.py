@@ -126,6 +126,18 @@ def get_best_val_loss_from_wandb(entity: str, project: str, run_id: str) -> floa
         return float("inf")
 
 
+def get_best_scalar_from_wandb(entity: str, project: str, run_id: str, key: str) -> float:
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project}/{run_id}")
+    val = run.summary.get(key, None)
+    if val is None:
+        return float("inf")
+    try:
+        return float(val)
+    except Exception:
+        return float("inf")
+
+
 def log_checkpoint_artifact(
     run: Any,
     *,

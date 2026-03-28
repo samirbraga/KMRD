@@ -27,6 +27,13 @@ from diffgeo.angles_and_coords import angles_tensor_to_coords
 from diffgeo.kinetic_metric import compute_kinetic_metric_diag
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
+from utils.diffusion_math import (
+    beta_t_linear,
+    metric_anneal_lambda_from_sigma2,
+    sigma2_linear,
+    to_angles_lengths,
+    wrap_to_pi,
+)
 from utils.train import create_train_state
 
 
@@ -39,44 +46,6 @@ FT_NAME_MAP = {
     "CA:C:1N": "CA-C-N",
     "C:1N:1CA": "C-N-CA",
 }
-
-
-def _wrap_to_pi(x: jnp.ndarray) -> jnp.ndarray:
-    return jnp.arctan2(jnp.sin(x), jnp.cos(x))
-
-
-def _to_angles_lengths(x: jnp.ndarray, mask: jnp.ndarray, n_feats: int = 6) -> tuple[jnp.ndarray, jnp.ndarray]:
-    bsz, d = x.shape
-    pad_minus_1 = d // n_feats
-    pad = pad_minus_1 + 1
-    angles = jnp.zeros((bsz, pad, n_feats), dtype=x.dtype).at[:, :pad_minus_1, :].set(
-        x.reshape(bsz, pad_minus_1, n_feats)
-    )
-    lengths = jnp.clip((jnp.sum(mask, axis=-1) / n_feats).astype(jnp.int32) + 1, a_min=1, a_max=pad)
-    return angles, lengths
-
-
-def _sigma2_linear(t: jnp.ndarray, beta_0: float, beta_f: float) -> jnp.ndarray:
-    return beta_0 * t + 0.5 * (beta_f - beta_0) * (t * t)
-
-
-def _beta_t(t: jnp.ndarray, beta_0: float, beta_f: float) -> jnp.ndarray:
-    return beta_0 + (beta_f - beta_0) * t
-
-
-def _anneal_lambda_from_sigma2(
-    sigma2: jnp.ndarray,
-    sigma2_max: jnp.ndarray,
-    enabled: bool,
-    data_lambda: float,
-    prior_lambda: float,
-    power: float,
-) -> jnp.ndarray:
-    if not enabled:
-        return jnp.ones_like(sigma2)
-    u = jnp.clip(sigma2 / jnp.clip(sigma2_max, a_min=1e-8), a_min=0.0, a_max=1.0)
-    u = jnp.power(u, power)
-    return jnp.clip(data_lambda + (prior_lambda - data_lambda) * u, a_min=0.0, a_max=1.0)
 
 
 def _decode_sample_to_angles(x: np.ndarray, length: int, n_feats: int = 6) -> np.ndarray:
@@ -373,7 +342,7 @@ def _sample_batch(
     x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
 
     ts = jnp.linspace(1.0 - cfg.eps, 0.0 + cfg.eps, cfg.n_steps, dtype=jnp.float32)
-    sigma2_max = jnp.clip(_sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
+    sigma2_max = jnp.clip(sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
 
     def _score_and_preconditioner(
         x_cur: jnp.ndarray,
@@ -383,7 +352,7 @@ def _sample_batch(
         g_diag = None
         sigma_diag = jnp.ones_like(mask)
         if cfg.metric_type == "kinetic_diag":
-            angles, lengths = _to_angles_lengths(x_cur, mask)
+            angles, lengths = to_angles_lengths(x_cur, mask)
             g_diag = compute_kinetic_metric_diag(
                 angles_batch=angles,
                 lengths=lengths,
@@ -394,9 +363,9 @@ def _sample_batch(
                 clamp_min=cfg.metric_clamp_min,
                 clamp_max=cfg.metric_clamp_max,
             )
-            lam = _anneal_lambda_from_sigma2(
-                sigma2_t,
-                sigma2_max,
+            lam = metric_anneal_lambda_from_sigma2(
+                sigma2=sigma2_t,
+                sigma2_max=sigma2_max,
                 enabled=cfg.metric_anneal,
                 data_lambda=cfg.metric_anneal_data_lambda,
                 prior_lambda=cfg.metric_anneal_prior_lambda,
@@ -427,15 +396,15 @@ def _sample_batch(
         t_next = ts[k + 1]
         dt = jnp.abs(t - t_next)
         vec_t = jnp.full((bsz,), t, dtype=jnp.float32)
-        beta_t = _beta_t(vec_t, cfg.beta_0, cfg.beta_f)
-        sigma2_t = jnp.clip(_sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
+        beta_t = beta_t_linear(vec_t, cfg.beta_0, cfg.beta_f)
+        sigma2_t = jnp.clip(sigma2_linear(vec_t, cfg.beta_0, cfg.beta_f), a_min=1e-8)
         score, sigma_diag = _score_and_preconditioner(x, vec_t, sigma2_t)
 
         rng_loop, rng_noise = jax.random.split(rng_loop)
         noise = jax.random.normal(rng_noise, x.shape, dtype=x.dtype) * mask
         drift = 2.0 * dt * beta_t[:, None] * sigma_diag * score
         diff = jnp.sqrt(2.0 * dt * beta_t)[:, None] * jnp.sqrt(sigma_diag) * noise
-        x_next = _wrap_to_pi(x + drift + diff) * mask
+        x_next = wrap_to_pi(x + drift + diff) * mask
 
         if cfg.pc_corrector_steps > 0:
             corr_dt = (cfg.pc_corrector_step_scale * dt) / float(cfg.pc_corrector_steps)
@@ -448,7 +417,7 @@ def _sample_batch(
                 corr_noise = jax.random.normal(rng_corr_noise, x_corr.shape, dtype=x_corr.dtype) * mask
                 corr_drift = corr_dt * beta_t[:, None] * sigma_diag_corr * score_corr
                 corr_diff = jnp.sqrt(2.0 * corr_dt * cfg.pc_corrector_noise_scale) * jnp.sqrt(sigma_diag_corr) * corr_noise
-                x_corr_next = _wrap_to_pi(x_corr + corr_drift + corr_diff) * mask
+                x_corr_next = wrap_to_pi(x_corr + corr_drift + corr_diff) * mask
                 return x_corr_next, rng_corr
 
             x_next, rng_loop = lax.fori_loop(0, cfg.pc_corrector_steps, _corr_body, (x_next, rng_loop))

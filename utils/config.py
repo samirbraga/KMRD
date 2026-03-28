@@ -51,6 +51,14 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     start_eval_epoch: int = 1
     val_log_every: int = 0
     val_max_batches: int = 0
+    val_kl_enable: bool = True
+    val_kl_samples: int = 64
+    val_kl_batch_size: int = 32
+    val_kl_n_steps: int = 200
+    val_kl_eps: float = 1e-3
+    val_kl_bins: int = 120
+    val_kl_ref_limit: int = 0
+    best_metric: Literal["val_loss", "val_kl"] = "val_kl"
     distributed: bool = True
 
     wandb_entity: str = "rdem"

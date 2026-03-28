@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 import flax.serialization
 import jax
 import jax.numpy as jnp
+from jax import lax
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -366,12 +367,13 @@ def _sample_batch(
 ) -> jnp.ndarray:
     bsz, _ = mask.shape
     rng, rng_init = jax.random.split(rng)
-    x = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
+    x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
 
     ts = jnp.linspace(1.0 - cfg.eps, 0.0 + cfg.eps, cfg.n_steps, dtype=jnp.float32)
     sigma2_max = jnp.clip(_sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), cfg.beta_0, cfg.beta_f), a_min=1e-8)
 
-    for k in range(cfg.n_steps - 1):
+    def _body(k: int, carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+        x, rng_loop = carry
         t = ts[k]
         t_next = ts[k + 1]
         dt = jnp.abs(t - t_next)
@@ -419,13 +421,15 @@ def _sample_batch(
         else:
             score = -eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
 
-        rng, rng_noise = jax.random.split(rng)
+        rng_loop, rng_noise = jax.random.split(rng_loop)
         noise = jax.random.normal(rng_noise, x.shape, dtype=x.dtype) * mask
         drift = 2.0 * dt * beta_t[:, None] * sigma_diag * score
         diff = jnp.sqrt(2.0 * dt * beta_t)[:, None] * jnp.sqrt(sigma_diag) * noise
-        x = _wrap_to_pi(x + drift + diff) * mask
+        x_next = _wrap_to_pi(x + drift + diff) * mask
+        return (x_next, rng_loop)
 
-    return x
+    x_fin, _ = lax.fori_loop(0, cfg.n_steps - 1, _body, (x0, rng))
+    return x_fin
 
 
 def main() -> None:
@@ -451,22 +455,29 @@ def main() -> None:
     saved = 0
     d = 6 * (cfg.max_seq_len - 1)
 
-    for start in range(0, len(lengths_arr), cfg.batch_size):
+    sample_batch_compiled = jax.jit(
+        lambda mask_in, rng_in: _sample_batch(
+            params=params,
+            model=model,
+            mask=mask_in,
+            cfg=cfg,
+            rng=rng_in,
+        )
+    )
+
+    total_batches = (len(lengths_arr) + cfg.batch_size - 1) // cfg.batch_size
+    print(f"sampling_start total_samples={len(lengths_arr)} batch_size={cfg.batch_size} total_batches={total_batches}")
+    for batch_idx, start in enumerate(range(0, len(lengths_arr), cfg.batch_size), start=1):
         batch_lengths = lengths_arr[start : start + cfg.batch_size]
         b = len(batch_lengths)
-        mask = np.zeros((b, d), dtype=np.float32)
+        mask = np.zeros((cfg.batch_size, d), dtype=np.float32)
         for i, length_i in enumerate(batch_lengths):
             mask[i, : (length_i - 1) * 6] = 1.0
 
+        print(f"sampling_batch {batch_idx}/{total_batches} size={b}")
         rng, step_rng = jax.random.split(rng)
-        x = _sample_batch(
-            params=params,
-            model=model,
-            mask=jnp.asarray(mask),
-            cfg=cfg,
-            rng=step_rng,
-        )
-        x_np = np.asarray(jax.device_get(x), dtype=np.float32)
+        x = sample_batch_compiled(jnp.asarray(mask), step_rng)
+        x_np = np.asarray(jax.device_get(x), dtype=np.float32)[:b]
 
         for i in range(b):
             length_i = int(batch_lengths[i])

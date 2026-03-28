@@ -313,11 +313,21 @@ def _build_model(cfg: EvalConfig) -> BertForDiffusion:
 
 
 def _load_params(model: BertForDiffusion, cfg: EvalConfig):
+    b = Path(cfg.checkpoint_path).read_bytes()
+    state_dict = flax.serialization.msgpack_restore(b)
+    if isinstance(state_dict, dict):
+        ema_params = state_dict.get("ema_params", None)
+        if ema_params is not None:
+            return ema_params
+        params = state_dict.get("params", None)
+        if params is not None:
+            return params
+
+    # Backward-compatible fallback for older checkpoints.
     d = 6 * (cfg.max_seq_len - 1)
     sample_x = jnp.zeros((1, d), dtype=jnp.float32)
     sample_mask = jnp.ones((1, d), dtype=jnp.float32)
     state = create_train_state(model, jax.random.PRNGKey(0), sample_x, sample_mask)
-    b = Path(cfg.checkpoint_path).read_bytes()
     loaded = flax.serialization.from_bytes(state, b)
     return loaded.ema_params if getattr(loaded, "ema_params", None) is not None else loaded.params
 

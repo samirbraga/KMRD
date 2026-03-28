@@ -7,6 +7,7 @@ import glob
 import gzip
 import hashlib
 import logging
+import multiprocessing
 import os
 import pickle
 from pathlib import Path
@@ -82,6 +83,66 @@ def _build_padded_outputs(
     )
 
 
+def _featurize_single_canonical_angles(fname: str) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Parse one structure and extract canonical angle features.
+
+    Returns None for unreadable/empty structures.
+    """
+    try:
+        parser = PDBParser(QUIET=True)
+        if fname.endswith(".gz"):
+            with gzip.open(fname, "rt") as handle:
+                structure = parser.get_structure(os.path.basename(fname), handle)
+        else:
+            structure = parser.get_structure(os.path.basename(fname), fname)
+
+        residues = []
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if residue.id[0] != " ":
+                        continue
+                    if all(atom in residue for atom in ("N", "CA", "C")):
+                        residues.append(residue)
+                if residues:
+                    break
+            if residues:
+                break
+
+        n = len(residues)
+        if n == 0:
+            return None
+
+        arr = np.full((n, 6), np.nan, dtype=np.float64)
+        for i in range(n):
+            r_i = residues[i]
+            n_i = r_i["N"].get_vector()
+            ca_i = r_i["CA"].get_vector()
+            c_i = r_i["C"].get_vector()
+
+            if i > 0:
+                c_prev = residues[i - 1]["C"].get_vector()
+                arr[i, 0] = calc_dihedral(c_prev, n_i, ca_i, c_i)  # phi
+
+            if i < n - 1:
+                n_next = residues[i + 1]["N"].get_vector()
+                ca_next = residues[i + 1]["CA"].get_vector()
+                c_next = residues[i + 1]["C"].get_vector()
+                arr[i, 1] = calc_dihedral(n_i, ca_i, c_i, n_next)  # psi
+                arr[i, 2] = calc_dihedral(ca_i, c_i, n_next, ca_next)  # omega
+                # Match legacy featurization (tau of residue i+1 stored at row i).
+                arr[i, 3] = calc_angle(n_next, ca_next, c_next)  # tau
+                arr[i, 4] = calc_angle(ca_i, c_i, n_next)  # CA:C:1N
+                arr[i, 5] = calc_angle(c_i, n_next, ca_next)  # C:1N:1CA
+
+        angles = _wrap_to_pi(arr).astype(np.float32, copy=False)
+        return {"angles": angles, "fname": fname}
+    except Exception as exc:  # pragma: no cover
+        logging.warning("Failed to parse %s: %s", fname, exc)
+        return None
+
+
 class CathCanonicalAnglesOnlyDataset:
     """
     CATH/AlphaFold dataset returning only canonical angles:
@@ -103,6 +164,7 @@ class CathCanonicalAnglesOnlyDataset:
         toy: int = 0,
         zero_center: bool = True,
         use_cache: bool = True,
+        num_workers: Optional[int] = None,
         cache_dir: Path = Path(os.path.dirname(os.path.abspath(__file__))),
         cache_path: Optional[Path] = None,
     ) -> None:
@@ -115,6 +177,7 @@ class CathCanonicalAnglesOnlyDataset:
         self.min_length = min_length
         self.trim_strategy = trim_strategy
         self.pdbs_src = pdbs
+        self.num_workers = num_workers
 
         self.fnames = self._get_pdb_fnames(pdbs)
         self.cache_dir = Path(cache_dir)
@@ -240,72 +303,38 @@ class CathCanonicalAnglesOnlyDataset:
 
         raise ValueError(f"Unknown pdb set: {pdbs}")
 
-    def _read_structure(self, fname: str):
-        parser = PDBParser(QUIET=True)
-        if fname.endswith(".gz"):
-            with gzip.open(fname, "rt") as handle:
-                return parser.get_structure(os.path.basename(fname), handle)
-        return parser.get_structure(os.path.basename(fname), fname)
-
-    @staticmethod
-    def _extract_chain_residues(structure) -> List:
-        residues = []
-        for model in structure:
-            for chain in model:
-                for residue in chain:
-                    if residue.id[0] != " ":
-                        continue
-                    if all(atom in residue for atom in ("N", "CA", "C")):
-                        residues.append(residue)
-                if residues:
-                    return residues
-        return residues
-
-    def _angles_from_residues(self, residues: Sequence) -> np.ndarray:
-        n = len(residues)
-        if n == 0:
-            return np.empty((0, 6), dtype=np.float32)
-
-        arr = np.full((n, 6), np.nan, dtype=np.float64)
-        for i in range(n):
-            r_i = residues[i]
-            n_i = r_i["N"].get_vector()
-            ca_i = r_i["CA"].get_vector()
-            c_i = r_i["C"].get_vector()
-
-            if i > 0:
-                c_prev = residues[i - 1]["C"].get_vector()
-                arr[i, 0] = calc_dihedral(c_prev, n_i, ca_i, c_i)  # phi
-
-            if i < n - 1:
-                n_next = residues[i + 1]["N"].get_vector()
-                ca_next = residues[i + 1]["CA"].get_vector()
-                c_next = residues[i + 1]["C"].get_vector()
-                arr[i, 1] = calc_dihedral(n_i, ca_i, c_i, n_next)  # psi
-                arr[i, 2] = calc_dihedral(ca_i, c_i, n_next, ca_next)  # omega
-                # Match the legacy PyTorch featurization, which stores tau for
-                # residue i+1 at row i, leaving the final row empty.
-                arr[i, 3] = calc_angle(n_next, ca_next, c_next)  # tau
-                arr[i, 4] = calc_angle(ca_i, c_i, n_next)  # CA:C:1N
-                arr[i, 5] = calc_angle(c_i, n_next, ca_next)  # C:1N:1CA
-
-        return _wrap_to_pi(arr).astype(np.float32, copy=False)
-
     def _compute_featurization(self, fnames: Sequence[str]) -> List[Dict[str, np.ndarray]]:
-        structures: List[Dict[str, np.ndarray]] = []
-        for fname in fnames:
-            try:
-                structure = self._read_structure(fname)
-                residues = self._extract_chain_residues(structure)
-                angles = self._angles_from_residues(residues)
-            except Exception as exc:  # pragma: no cover
-                logging.warning("Failed to parse %s: %s", fname, exc)
-                continue
+        n_files = len(fnames)
+        if n_files == 0:
+            return []
 
-            if angles.shape[0] == 0:
-                continue
-            structures.append({"angles": angles, "fname": fname})
-        return structures
+        if self.num_workers is None:
+            n_workers = multiprocessing.cpu_count()
+        else:
+            n_workers = max(1, int(self.num_workers))
+
+        logging.info(
+            "Computing featurization for %s structures with %s worker(s)",
+            n_files,
+            n_workers,
+        )
+
+        if n_workers == 1:
+            results = [_featurize_single_canonical_angles(fname) for fname in fnames]
+        else:
+            chunksize = max(1, min(250, n_files // (n_workers * 4) or 1))
+            # Use spawn to avoid forking a multithreaded JAX process.
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes=n_workers) as pool:
+                results = list(
+                    pool.map(
+                        _featurize_single_canonical_angles,
+                        fnames,
+                        chunksize=chunksize,
+                    )
+                )
+
+        return [item for item in results if item is not None and item["angles"].shape[0] > 0]
 
     def sample_length(self, n: int = 1) -> Union[int, List[int]]:
         if n <= 0:

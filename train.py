@@ -337,13 +337,18 @@ def main() -> None:
     )
     start_epoch = 1
     if cfg.resume_run:
-        resume_ckpt = download_wandb_checkpoint(
-            entity=cfg.wandb_entity,
-            project=cfg.wandb_project,
-            run_id=cfg.resume_run,
-            artifact_name=cfg.checkpoint_artifact_name,
-            out_dir=Path(cfg.weights_path),
-        )
+        if cfg.resume_checkpoint_path:
+            resume_ckpt = Path(cfg.resume_checkpoint_path)
+            if not resume_ckpt.exists():
+                raise FileNotFoundError(f"resume_checkpoint_path not found: {resume_ckpt}")
+        else:
+            resume_ckpt = download_wandb_checkpoint(
+                entity=cfg.wandb_entity,
+                project=cfg.wandb_project,
+                run_id=cfg.resume_run,
+                artifact_name=cfg.checkpoint_artifact_name,
+                out_dir=Path(cfg.weights_path),
+            )
         state_single = flax.serialization.from_bytes(state_single, resume_ckpt.read_bytes())
         start_epoch = get_resume_epoch_from_wandb(
             entity=cfg.wandb_entity,

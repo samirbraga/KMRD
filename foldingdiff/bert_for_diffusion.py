@@ -175,7 +175,7 @@ class BertForDiffusion(nn.Module):
         )
 
         g_diag_reshaped = None
-        if g_diag is not None:
+        if g_diag is not None and self.config.condition_on_g_diag:
             log_g = jnp.log(jnp.clip(g_diag, a_min=1e-6)) * mask.astype(g_diag.dtype)
             g_diag_reshaped = jnp.pad(log_g, ((0, 0), (left_pad, right_pad))).reshape(
                 (inputs.shape[0], -1, token_feat_size)

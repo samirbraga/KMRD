@@ -71,8 +71,8 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     best_metric: Literal["val_loss", "val_kl"] = "val_kl"
     distributed: bool = True
 
-    bridge_num_steps: int = 10
-    bridge_weight_type: Literal["default", "importance"] = "default"
+    bridge_num_steps: int = 15
+    bridge_weight_type: Literal["default", "importance"] = "importance"
     bridge_coordinates: Literal["intrinsic", "extrinsic"] = "extrinsic"
 
     wandb_entity: str = "rdem"

@@ -21,8 +21,8 @@ def batch_to_x_mask(batch: dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.nda
 def intrinsic_to_cossin(x: jnp.ndarray, mask: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     x_pair = jnp.stack([jnp.cos(x), jnp.sin(x)], axis=-1)
     x_ext = x_pair.reshape(x.shape[0], -1)
-    mask_ext = jnp.stack([mask, mask], axis=-1).reshape(mask.shape[0], -1)
-    return x_ext, mask_ext
+    # Keep mask in intrinsic layout (one entry per torsion angle), matching old Torch behavior.
+    return x_ext, mask
 
 
 def make_bridge_train_step(

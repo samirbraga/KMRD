@@ -118,7 +118,7 @@ def train_bridge_objective(
         mix=mix,
         model_apply_f=model.apply,
         model_apply_b=model_b.apply,
-        reduce_mean=False,
+        reduce_mean=True,
         eps=cfg.t_eps,
         num_steps=cfg.bridge_num_steps,
         weight_type=cfg.bridge_weight_type,
@@ -450,7 +450,7 @@ def main() -> None:
         hidden_dropout_prob=cfg.dropout,
         attention_probs_dropout_prob=cfg.dropout,
         input_feat_dim=bridge_feat_dim,
-        torsion_feat_dim=bridge_feat_dim,
+        torsion_feat_dim=6,
         condition_on_g_diag=(
             cfg.training_objective == "score"
             and cfg.metric_condition_model

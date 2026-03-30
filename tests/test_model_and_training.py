@@ -36,7 +36,7 @@ def _make_bridge_model() -> BertForDiffusion:
         hidden_dropout_prob=0.0,
         attention_probs_dropout_prob=0.0,
         input_feat_dim=12,
-        torsion_feat_dim=12,
+        torsion_feat_dim=6,
         condition_on_g_diag=False,
     )
     return BertForDiffusion(config=cfg)
@@ -71,9 +71,9 @@ def test_model_instantiation_and_forward_intrinsic() -> None:
 
 def test_model_instantiation_and_forward_extrinsic_bridge() -> None:
     model = _make_bridge_model()
-    b, d = 2, 36
-    x = jax.random.normal(jax.random.PRNGKey(3), (b, d))
-    m = jnp.ones((b, d), dtype=jnp.float32)
+    b, d_intr = 2, 18
+    x = jax.random.normal(jax.random.PRNGKey(3), (b, 2 * d_intr))
+    m = jnp.ones((b, d_intr), dtype=jnp.float32)
     variables = model.init(
         {"params": jax.random.PRNGKey(4), "dropout": jax.random.PRNGKey(5)},
         inputs=x,

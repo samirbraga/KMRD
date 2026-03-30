@@ -49,11 +49,11 @@ def test_batch_to_x_mask_and_cossin_preserve_masked_structure() -> None:
     assert x.shape == (2, 18)
     assert m.shape == (2, 18)
     assert x_ext.shape == (2, 36)
-    assert m_ext.shape == (2, 36)
+    assert m_ext.shape == (2, 18)
     assert int(jnp.sum(m[0])) == 12
     assert int(jnp.sum(m[1])) == 18
-    assert int(jnp.sum(m_ext[0])) == 24
-    assert int(jnp.sum(m_ext[1])) == 36
+    assert int(jnp.sum(m_ext[0])) == 12
+    assert int(jnp.sum(m_ext[1])) == 18
 
 
 def test_intrinsic_and_extrinsic_manifold_projection_respects_mask() -> None:

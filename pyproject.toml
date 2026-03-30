@@ -105,5 +105,51 @@ jaxlib = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18.2",
     "pytest",
+    "ruff>=0.13.2",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "weights*",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E402", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["foldingdiff", "score_based", "diffgeo", "evaluation", "RDM", "utils"]
+
+[tool.ruff.lint.per-file-ignores]
+"*/__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+pretty = true
+show_error_codes = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+ignore_missing_imports = true
+follow_imports = "skip"
+allow_redefinition = true
+check_untyped_defs = false
+disable_error_code = ["call-arg", "var-annotated", "dict-item", "misc", "no-redef", "assignment", "call-overload"]
+exclude = [
+    "^tests/",
+    "^\\.venv/",
+]
+
+[[tool.mypy.overrides]]
+module = ["evaluation.basic_evaluation", "foldingdiff.dataset", "train", "utils.config"]
+ignore_errors = true

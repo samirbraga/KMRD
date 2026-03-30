@@ -47,8 +47,12 @@ def batch_iter_sharded(
         if b != global_batch_size:
             continue
         yield {
-            "angles": batch["angles"].reshape(n_devices, per_device_batch, *batch["angles"].shape[1:]),
-            "geo_mask": batch["geo_mask"].reshape(n_devices, per_device_batch, *batch["geo_mask"].shape[1:]),
+            "angles": batch["angles"].reshape(
+                n_devices, per_device_batch, *batch["angles"].shape[1:]
+            ),
+            "geo_mask": batch["geo_mask"].reshape(
+                n_devices, per_device_batch, *batch["geo_mask"].shape[1:]
+            ),
         }
 
 

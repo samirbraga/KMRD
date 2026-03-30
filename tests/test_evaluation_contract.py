@@ -45,7 +45,9 @@ def test_compute_and_save_metrics_outputs_files_and_keys(tmp_path) -> None:
     rng = np.random.default_rng(1)
     generated = rng.uniform(-np.pi, np.pi, size=(256, len(FT_NAMES))).astype(np.float32)
     reference = rng.uniform(-np.pi, np.pi, size=(256, len(FT_NAMES))).astype(np.float32)
-    metrics = _compute_and_save_metrics(generated=generated, reference=reference, plots_dir=tmp_path)
+    metrics = _compute_and_save_metrics(
+        generated=generated, reference=reference, plots_dir=tmp_path
+    )
 
     for name in FT_NAMES:
         assert f"kl_{name}" in metrics
@@ -57,4 +59,3 @@ def test_compute_and_save_metrics_outputs_files_and_keys(tmp_path) -> None:
     assert (tmp_path / "angles_cdf.png").exists()
     assert (tmp_path / "ramachandran_test.png").exists()
     assert (tmp_path / "ramachandran_generated.png").exists()
-

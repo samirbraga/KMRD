@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import flax.jax_utils as flax_jax_utils
 import flax.serialization
 import jax
 import jax.numpy as jnp
 import numpy as np
-import wandb
 
+import wandb
+from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
+from evaluation.metrics import collect_reference_angles, compute_val_kl, params_for_eval
+from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
+from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
 from RDM.training import intrinsic_to_cossin, make_bridge_train_step, train_one_epoch_bridge
-from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
-from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
-from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from score_based.sampling import sample_intrinsic_batch
 from score_based.training import (
     ScoreTrainConfig,
@@ -33,7 +33,6 @@ from utils.checkpoint import save_checkpoint
 from utils.config import TrainConfig
 from utils.data_iter import batch_iter, batch_iter_for_mode
 from utils.lr_schedule import build_learning_rate_schedule
-from evaluation.metrics import collect_reference_angles, compute_val_kl, params_for_eval
 from utils.wandb import (
     download_wandb_checkpoint,
     get_best_scalar_from_wandb,
@@ -72,7 +71,6 @@ def _sample_batch_eval(
         metric_anneal_power=cfg.metric_anneal_power,
         pc_corrector_steps=0,
     )
-
 
 
 def main() -> None:
@@ -123,9 +121,11 @@ def main() -> None:
             val_ds, limit=cfg.val_kl_ref_limit
         )
 
-    bridge_feat_dim = 12 if (
-        cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic"
-    ) else 6
+    bridge_feat_dim = (
+        12
+        if (cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic")
+        else 6
+    )
     model_cfg = BertDiffusionConfig(
         num_attention_heads=cfg.net_size * 4,
         hidden_size=cfg.net_size * 128,
@@ -145,7 +145,11 @@ def main() -> None:
     n_devices = jax.local_device_count()
     use_distributed = bool(cfg.distributed and n_devices > 1)
 
-    init_batch = next(batch_iter(train_ds, batch_size=min(cfg.batch_size, len(train_ds)), rng=np_rng, shuffle=False))
+    init_batch = next(
+        batch_iter(
+            train_ds, batch_size=min(cfg.batch_size, len(train_ds)), rng=np_rng, shuffle=False
+        )
+    )
     sample_x = init_batch["angles"][:, :-1, :].reshape(init_batch["angles"].shape[0], -1)
     sample_mask = init_batch["geo_mask"]
     if cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic":
@@ -198,33 +202,45 @@ def main() -> None:
         if cfg.training_objective == "bridge_matching":
             raw_state = flax.serialization.msgpack_restore(ckpt_bytes)
             if isinstance(raw_state, dict) and "state_f" in raw_state and "state_b" in raw_state:
-                state_single = flax.serialization.from_state_dict(state_single, raw_state["state_f"])
+                state_single = flax.serialization.from_state_dict(
+                    state_single, raw_state["state_f"]
+                )
                 assert state_b_single is not None
-                state_b_single = flax.serialization.from_state_dict(state_b_single, raw_state["state_b"])
+                state_b_single = flax.serialization.from_state_dict(
+                    state_b_single, raw_state["state_b"]
+                )
             else:
                 state_single = flax.serialization.from_bytes(state_single, ckpt_bytes)
         else:
             state_single = flax.serialization.from_bytes(state_single, ckpt_bytes)
-        start_epoch = get_resume_epoch_from_wandb(
-            entity=cfg.wandb_entity,
-            project=cfg.wandb_project,
-            run_id=cfg.resume_run,
-        ) + 1
+        start_epoch = (
+            get_resume_epoch_from_wandb(
+                entity=cfg.wandb_entity,
+                project=cfg.wandb_project,
+                run_id=cfg.resume_run,
+            )
+            + 1
+        )
         print(f"resumed_checkpoint={resume_ckpt}")
         print(f"resumed_start_epoch={start_epoch}")
     state: TrainState = flax_jax_utils.replicate(state_single) if use_distributed else state_single
 
     if cfg.training_objective == "bridge_matching":
         if use_distributed:
-            raise ValueError("training_objective=bridge_matching currently supports only distributed=false")
+            raise ValueError(
+                "training_objective=bridge_matching currently supports only distributed=false"
+            )
         assert model_b is not None and state_b_single is not None
+
+        def _identity_preprocess(x, m):
+            return x, m
 
         if cfg.bridge_coordinates == "extrinsic":
             manifold = ExtrinsicMaskedTorus(dim=sample_x.shape[-1] // 2)
             preprocess_fn = intrinsic_to_cossin
         else:
             manifold = IntrinsicMaskedTorus(dim=sample_x.shape[-1])
-            preprocess_fn = lambda x, m: (x, m)
+            preprocess_fn = _identity_preprocess
         beta_schedule = LinearBetaSchedule(
             tf=1.0,
             t0=0.0,
@@ -293,7 +309,9 @@ def main() -> None:
                     step=epoch,
                 )
 
-            if cfg.save_every_epochs > 0 and (epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs or is_best):
+            if cfg.save_every_epochs > 0 and (
+                epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs or is_best
+            ):
                 ckpt_path = ckpt_root / f"model_epoch_{epoch:04d}.msgpack"
                 save_state = {"state_f": state_f, "state_b": state_b}
                 save_checkpoint(ckpt_path, save_state, epoch, metrics, cfg)
@@ -360,7 +378,9 @@ def main() -> None:
         else float("inf")
     )
     best_val_kl = (
-        get_best_scalar_from_wandb(cfg.wandb_entity, cfg.wandb_project, cfg.resume_run, "best_val_kl")
+        get_best_scalar_from_wandb(
+            cfg.wandb_entity, cfg.wandb_project, cfg.resume_run, "best_val_kl"
+        )
         if cfg.resume_run
         else float("inf")
     )
@@ -434,7 +454,9 @@ def main() -> None:
                 )
                 print(f"epoch={epoch:04d} val_kl={val_kl:.6f}")
 
-        improved_val_loss = bool(val_metrics is not None and float(val_metrics["loss"]) < best_val_loss)
+        improved_val_loss = bool(
+            val_metrics is not None and float(val_metrics["loss"]) < best_val_loss
+        )
         if improved_val_loss and val_metrics is not None:
             best_val_loss = float(val_metrics["loss"])
         improved_val_kl = bool(val_kl is not None and val_kl < best_val_kl)
@@ -468,7 +490,9 @@ def main() -> None:
                 payload["best_val_kl"] = best_val_kl
             wandb_run.log(payload, step=epoch)
 
-        if cfg.save_every_epochs > 0 and (epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs):
+        if cfg.save_every_epochs > 0 and (
+            epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs
+        ):
             ckpt_path = ckpt_root / f"model_epoch_{epoch:04d}.msgpack"
             save_state = flax_jax_utils.unreplicate(state) if use_distributed else state
             save_checkpoint(ckpt_path, save_state, epoch, metrics, cfg)

@@ -7,8 +7,8 @@ from .diffusion_math import (
     to_angles_lengths,
     wrap_to_pi,
 )
-from .sampling import sample_intrinsic_batch
 from .losses import get_flat_score_loss_fn, get_kinetic_score_loss_fn
+from .sampling import sample_intrinsic_batch
 from .training import (
     ScoreTrainConfig,
     TrainState,

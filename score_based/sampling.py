@@ -44,10 +44,14 @@ def sample_intrinsic_batch(
 ) -> jnp.ndarray:
     bsz, _ = mask.shape
     rng, rng_init = jax.random.split(rng)
-    x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(jnp.float32)
+    x0 = (jax.random.uniform(rng_init, mask.shape, minval=-jnp.pi, maxval=jnp.pi) * mask).astype(
+        jnp.float32
+    )
 
     ts = jnp.linspace(1.0 - eps, 0.0 + eps, n_steps, dtype=jnp.float32)
-    sigma2_max = jnp.clip(sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), beta_0, beta_f), a_min=1e-8)
+    sigma2_max = jnp.clip(
+        sigma2_linear(jnp.ones((bsz,), dtype=jnp.float32), beta_0, beta_f), a_min=1e-8
+    )
 
     def _score_and_preconditioner(
         x_cur: jnp.ndarray,
@@ -90,7 +94,11 @@ def sample_intrinsic_batch(
             deterministic=True,
         )
         if metric_type == "kinetic_diag":
-            score = -jnp.sqrt(jnp.clip(g_diag, a_min=1e-8)) * eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
+            score = (
+                -jnp.sqrt(jnp.clip(g_diag, a_min=1e-8))
+                * eps_pred
+                / jnp.sqrt(2.0 * sigma2_t[:, None])
+            )
         else:
             score = -eps_pred / jnp.sqrt(2.0 * sigma2_t[:, None])
         return score, sigma_diag
@@ -115,13 +123,21 @@ def sample_intrinsic_batch(
             corr_dt = (pc_corrector_step_scale * dt) / float(pc_corrector_steps)
             corr_dt = jnp.clip(corr_dt, a_min=1e-8)
 
-            def _corr_body(_: int, corr_carry: tuple[jnp.ndarray, jax.Array]) -> tuple[jnp.ndarray, jax.Array]:
+            def _corr_body(
+                _: int, corr_carry: tuple[jnp.ndarray, jax.Array]
+            ) -> tuple[jnp.ndarray, jax.Array]:
                 x_corr, rng_corr = corr_carry
                 score_corr, sigma_diag_corr = _score_and_preconditioner(x_corr, vec_t, sigma2_t)
                 rng_corr, rng_corr_noise = jax.random.split(rng_corr)
-                corr_noise = jax.random.normal(rng_corr_noise, x_corr.shape, dtype=x_corr.dtype) * mask
+                corr_noise = (
+                    jax.random.normal(rng_corr_noise, x_corr.shape, dtype=x_corr.dtype) * mask
+                )
                 corr_drift = corr_dt * beta_t[:, None] * sigma_diag_corr * score_corr
-                corr_diff = jnp.sqrt(2.0 * corr_dt * pc_corrector_noise_scale) * jnp.sqrt(sigma_diag_corr) * corr_noise
+                corr_diff = (
+                    jnp.sqrt(2.0 * corr_dt * pc_corrector_noise_scale)
+                    * jnp.sqrt(sigma_diag_corr)
+                    * corr_noise
+                )
                 x_corr_next = wrap_to_pi(x_corr + corr_drift + corr_diff) * mask
                 return x_corr_next, rng_corr
 
@@ -130,4 +146,3 @@ def sample_intrinsic_batch(
 
     x_fin, _ = lax.fori_loop(0, n_steps - 1, _body, (x0, rng))
     return x_fin
-

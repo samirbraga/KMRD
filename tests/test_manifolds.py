@@ -51,4 +51,3 @@ def test_extrinsic_exp_stays_on_manifold() -> None:
     y = m.exp(v, base)
     norms = jnp.linalg.norm(y.reshape(2, 18, 2), axis=-1)
     assert jnp.max(jnp.abs(norms - 1.0)) < 1e-5
-

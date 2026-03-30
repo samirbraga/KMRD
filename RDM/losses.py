@@ -13,7 +13,6 @@ import jax.numpy as jnp
 
 from RDM.sde_lib import DiffusionMixture
 from RDM.solver import get_twoway_sampler
-from score_based.losses import get_flat_score_loss_fn, get_kinetic_score_loss_fn
 
 
 def _reduce_batch(losses: jnp.ndarray, reduce_mean: bool) -> jnp.ndarray:
@@ -139,4 +138,3 @@ def get_bridge_loss_fn(
         return lf + lb, {"loss_f": lf, "loss_b": lb}
 
     return loss_fn
-

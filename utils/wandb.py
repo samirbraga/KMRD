@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 from typing import Any
 
 import wandb
-
 from utils.config import TrainConfig
 
 
@@ -17,9 +16,7 @@ def parse_wandb_run_path(run_ref: str, entity: str, project: str) -> tuple[str, 
         return entity, project, parts[0]
     if len(parts) == 3:
         return parts[0], parts[1], parts[2]
-    raise ValueError(
-        f"Invalid resume_run={run_ref!r}. Use run_id or 'entity/project/run_id'."
-    )
+    raise ValueError(f"Invalid resume_run={run_ref!r}. Use run_id or 'entity/project/run_id'.")
 
 
 def load_config_from_resumed_run(cfg: TrainConfig) -> TrainConfig:

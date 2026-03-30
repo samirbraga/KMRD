@@ -3,10 +3,10 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus, KineticIntrinsicTorus
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
-from diffgeo.manifold import ExtrinsicMaskedTorus, KineticIntrinsicTorus, IntrinsicMaskedTorus
 from score_based.losses import get_flat_score_loss_fn, get_kinetic_score_loss_fn
 
 
@@ -51,7 +51,9 @@ def test_kinetic_score_loss_finite() -> None:
 
     x = jax.random.uniform(jax.random.PRNGKey(12), (2, 18), minval=-jnp.pi, maxval=jnp.pi)
     mask = jnp.ones_like(x)
-    loss, aux = loss_fn(jax.random.PRNGKey(13), params=jnp.array(0.0), x=x, mask=mask, deterministic=True)
+    loss, aux = loss_fn(
+        jax.random.PRNGKey(13), params=jnp.array(0.0), x=x, mask=mask, deterministic=True
+    )
     assert jnp.isfinite(loss)
     assert jnp.isfinite(aux["sigma2_mean"])
     assert jnp.isfinite(aux["g0_mean"])
@@ -83,4 +85,3 @@ def test_bridge_loss_finite() -> None:
     assert jnp.isfinite(loss)
     assert jnp.isfinite(aux["loss_f"])
     assert jnp.isfinite(aux["loss_b"])
-

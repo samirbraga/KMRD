@@ -43,4 +43,3 @@ def build_learning_rate_schedule(
         schedules=[warmup_sched, decay_sched],
         boundaries=[warmup_steps],
     )
-

@@ -149,9 +149,7 @@ class CathCanonicalAnglesOnlyDataset:
     phi, psi, omega, tau, CA:C:1N, C:1N:1CA
     """
 
-    feature_names = {
-        "angles": ["phi", "psi", "omega", "tau", "CA:C:1N", "C:1N:1CA"]
-    }
+    feature_names = {"angles": ["phi", "psi", "omega", "tau", "CA:C:1N", "C:1N:1CA"]}
     feature_is_angular = {"angles": [True, True, True, True, True, True]}
 
     def __init__(
@@ -357,9 +355,7 @@ class CathCanonicalAnglesOnlyDataset:
     def __len__(self) -> int:
         return len(self.structures)
 
-    def __getitem__(
-        self, index: int, ignore_zero_center: bool = False
-    ) -> Dict[str, np.ndarray]:
+    def __getitem__(self, index: int, ignore_zero_center: bool = False) -> Dict[str, np.ndarray]:
         if not 0 <= index < len(self):
             raise IndexError("Index out of range")
 

@@ -78,7 +78,9 @@ class DiffusionMixture(Mixture):
         mix_type: str = "log",
         **kwargs,
     ):
-        super().__init__(manifold=manifold, beta_schedule=beta_schedule, prior_type=prior_type, **kwargs)
+        super().__init__(
+            manifold=manifold, beta_schedule=beta_schedule, prior_type=prior_type, **kwargs
+        )
         self.drift_scale = float(drift_scale)
         self.mix_type = str(mix_type)
 

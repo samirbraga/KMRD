@@ -3,10 +3,10 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from diffgeo.manifold import ExtrinsicMaskedTorus
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.sde_lib import DiffusionMixture
 from RDM.training import intrinsic_to_cossin
-from diffgeo.manifold import ExtrinsicMaskedTorus
 
 
 def _make_varlen_intrinsic_mask() -> jnp.ndarray:

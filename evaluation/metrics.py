@@ -91,4 +91,3 @@ def params_for_eval(state: Any, use_ema: bool):
     if use_ema and getattr(state, "ema_params", None) is not None:
         return state.ema_params
     return state.params
-

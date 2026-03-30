@@ -10,7 +10,9 @@ from diffgeo.manifold import KineticIntrinsicTorus
 def test_kinetic_metric_is_finite_positive_and_mask_neutral_on_padding() -> None:
     bsz, lmax = 2, 4
     d = 6 * (lmax - 1)
-    angles = jax.random.uniform(jax.random.PRNGKey(0), (bsz, lmax, 6), minval=-jnp.pi, maxval=jnp.pi)
+    angles = jax.random.uniform(
+        jax.random.PRNGKey(0), (bsz, lmax, 6), minval=-jnp.pi, maxval=jnp.pi
+    )
     lengths = jnp.array([3, 4], dtype=jnp.int32)
     geo_mask = jnp.zeros((bsz, d), dtype=jnp.float32)
     geo_mask = geo_mask.at[0, :12].set(1.0)
@@ -45,4 +47,3 @@ def test_metric_anneal_lambda_endpoints_and_monotonicity() -> None:
     assert jnp.isclose(lam[0], 0.0, atol=1e-6)
     assert jnp.isclose(lam[-1], 1.0, atol=1e-6)
     assert jnp.all(jnp.diff(lam) >= -1e-6)
-

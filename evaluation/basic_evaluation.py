@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Literal
-import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,18 +16,18 @@ import flax.serialization
 import jax
 import jax.numpy as jnp
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import wandb
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import wandb
 from diffgeo.angles_and_coords import angles_tensor_to_coords
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from score_based.sampling import sample_intrinsic_batch
 from score_based.training import create_train_state
-
 
 FT_NAMES = CathCanonicalAnglesOnlyDataset.feature_names["angles"]
 FT_NAME_MAP = {
@@ -57,7 +57,9 @@ def _kl_from_empirical(sampled: np.ndarray, reference: np.ndarray, nbins: int = 
     return float(np.sum(p * np.log(p / q)))
 
 
-def _plot_distribution_overlap(sampled: np.ndarray, reference: np.ndarray, title: str, ax: Any, cumulative: bool = False) -> None:
+def _plot_distribution_overlap(
+    sampled: np.ndarray, reference: np.ndarray, title: str, ax: Any, cumulative: bool = False
+) -> None:
     bins = 60
     ax.hist(
         reference,
@@ -143,7 +145,9 @@ def _build_test_reference(cfg: EvalConfig) -> np.ndarray:
         raise RuntimeError("Test dataset is empty; cannot compute evaluation metrics.")
 
     stacked = []
-    n_limit = cfg.eval_test_limit if cfg.eval_test_limit and cfg.eval_test_limit > 0 else len(test_ds)
+    n_limit = (
+        cfg.eval_test_limit if cfg.eval_test_limit and cfg.eval_test_limit > 0 else len(test_ds)
+    )
     for i in range(min(len(test_ds), n_limit)):
         item = test_ds[i]
         angles = item["angles"][:-1, :]
@@ -403,7 +407,9 @@ def main() -> None:
         f"pc_steps={cfg.pc_corrector_steps} pc_step_scale={cfg.pc_corrector_step_scale} "
         f"pc_noise_scale={cfg.pc_corrector_noise_scale}"
     )
-    print(f"sampling_start total_samples={len(lengths_arr)} batch_size={cfg.batch_size} total_batches={total_batches}")
+    print(
+        f"sampling_start total_samples={len(lengths_arr)} batch_size={cfg.batch_size} total_batches={total_batches}"
+    )
     for batch_idx, start in enumerate(range(0, len(lengths_arr), cfg.batch_size), start=1):
         batch_lengths = lengths_arr[start : start + cfg.batch_size]
         b = len(batch_lengths)

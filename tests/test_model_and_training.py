@@ -3,12 +3,12 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from diffgeo.manifold import ExtrinsicMaskedTorus
+from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
 from RDM.training import intrinsic_to_cossin, make_bridge_train_step
-from diffgeo.manifold import ExtrinsicMaskedTorus
-from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from score_based.training import ScoreTrainConfig, create_train_state, make_train_step
 
 
@@ -174,4 +174,3 @@ def test_bridge_training_step_smoke_extrinsic() -> None:
     assert jnp.isfinite(metrics["loss"])
     assert jnp.isfinite(metrics["loss_f"])
     assert jnp.isfinite(metrics["loss_b"])
-

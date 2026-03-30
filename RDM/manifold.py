@@ -13,4 +13,3 @@ __all__ = [
     "KineticIntrinsicTorus",
     "to_angles_lengths",
 ]
-

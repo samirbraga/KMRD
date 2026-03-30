@@ -91,9 +91,7 @@ class BertLayer(nn.Module):
         ff = nn.Dropout(rate=cfg.hidden_dropout_prob, name="ffn_dropout")(
             ff, deterministic=deterministic
         )
-        hidden_states = nn.LayerNorm(epsilon=cfg.layer_norm_eps, name="ffn_ln")(
-            residual + ff
-        )
+        hidden_states = nn.LayerNorm(epsilon=cfg.layer_norm_eps, name="ffn_ln")(residual + ff)
         return hidden_states
 
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 class UniformDistribution:
@@ -24,4 +23,3 @@ class UniformDistribution:
 
     def log_prob(self, z: jnp.ndarray):
         return -np.ones((z.shape[0],), dtype=np.float32) * self.manifold.log_volume()
-

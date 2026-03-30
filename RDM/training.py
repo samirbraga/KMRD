@@ -121,9 +121,12 @@ def train_one_epoch_bridge(
                 f"loss_f={m_f:.6f} loss_b={m_b:.6f}"
             )
     denom = max(1, n_steps)
-    return state_f, state_b, {
-        "loss": loss_sum / denom,
-        "loss_f": loss_f_sum / denom,
-        "loss_b": loss_b_sum / denom,
-    }
-
+    return (
+        state_f,
+        state_b,
+        {
+            "loss": loss_sum / denom,
+            "loss_f": loss_f_sum / denom,
+            "loss_b": loss_b_sum / denom,
+        },
+    )

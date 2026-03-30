@@ -4,11 +4,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
+from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.sde_lib import DiffusionMixture
 from RDM.training import batch_to_x_mask, intrinsic_to_cossin
-from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
-from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from score_based.losses import get_flat_score_loss_fn
 from score_based.sampling import sample_intrinsic_batch
 
@@ -128,4 +128,3 @@ def test_dataset_emits_variable_mask_lengths() -> None:
 
     # At least two distinct mask sizes for different protein lengths.
     assert len(set(mask_sums)) >= 2
-

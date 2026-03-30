@@ -85,4 +85,3 @@ def get_twoway_sampler(
         return x_final
 
     return sampler
-

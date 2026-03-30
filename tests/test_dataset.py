@@ -37,4 +37,3 @@ def test_dataset_item_shapes_and_masks() -> None:
     assert 1 <= length <= pad
     geo_mask_sum = int(np.sum(item["geo_mask"]))
     assert geo_mask_sum == max(length - 1, 0) * 6
-

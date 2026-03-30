@@ -124,7 +124,9 @@ def _score_loss(
     cfg: ScoreTrainConfig,
 ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
     if cfg.coordinate_system != "intrinsic":
-        raise ValueError("Score-based Riemannian diffusion training only supports intrinsic coordinates.")
+        raise ValueError(
+            "Score-based Riemannian diffusion training only supports intrinsic coordinates."
+        )
 
     angles = jnp.asarray(batch["angles"], dtype=jnp.float32)
     mask = jnp.asarray(batch["geo_mask"], dtype=jnp.float32)
@@ -192,7 +194,9 @@ def _score_loss(
 
 
 def make_train_step(cfg: ScoreTrainConfig):
-    def train_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> tuple[TrainState, dict[str, jnp.ndarray]]:
+    def train_step(
+        state: TrainState, batch: dict[str, jnp.ndarray]
+    ) -> tuple[TrainState, dict[str, jnp.ndarray]]:
         rng, step_rng = jax.random.split(state.rng)
 
         def loss_fn(params):
@@ -223,7 +227,9 @@ def make_train_step(cfg: ScoreTrainConfig):
 
 
 def make_train_step_pmap(cfg: ScoreTrainConfig):
-    def train_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> tuple[TrainState, dict[str, jnp.ndarray]]:
+    def train_step(
+        state: TrainState, batch: dict[str, jnp.ndarray]
+    ) -> tuple[TrainState, dict[str, jnp.ndarray]]:
         rng, step_rng = jax.random.split(state.rng)
 
         def loss_fn(params):
@@ -262,7 +268,9 @@ def make_eval_step(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
         eval_params = (
-            state.ema_params if (cfg.eval_use_ema and state.ema_params is not None) else state.params
+            state.ema_params
+            if (cfg.eval_use_ema and state.ema_params is not None)
+            else state.params
         )
         loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         metrics = dict(aux)
@@ -277,7 +285,9 @@ def make_eval_step_pmap(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
         eval_params = (
-            state.ema_params if (cfg.eval_use_ema and state.ema_params is not None) else state.params
+            state.ema_params
+            if (cfg.eval_use_ema and state.ema_params is not None)
+            else state.params
         )
         loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         loss = lax.pmean(loss, axis_name="data")

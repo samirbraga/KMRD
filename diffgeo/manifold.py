@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from diffgeo.kinetic_metric import compute_kinetic_metric_diag
 
 try:
-    import geomstats.backend as gs  # type: ignore
+    import geomstats.backend as gs
 except Exception:  # pragma: no cover - optional at runtime
     gs = None
 
@@ -111,7 +111,6 @@ class IntrinsicMaskedTorus:
         base_point: jnp.ndarray,
         mask: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        del base_point
         z = jax.random.normal(rng, shape=base_point.shape, dtype=base_point.dtype)
         return z * _to_mask(mask, z)
 
@@ -158,9 +157,10 @@ class KineticIntrinsicTorus(IntrinsicMaskedTorus):
         sigma2_max_t = jnp.asarray(sigma2_max, dtype=sigma2.dtype)
         u = jnp.clip(sigma2 / jnp.clip(sigma2_max_t, a_min=1e-8), a_min=0.0, a_max=1.0)
         u = jnp.power(u, self.metric_anneal_power)
-        lam = self.metric_anneal_data_lambda + (
-            self.metric_anneal_prior_lambda - self.metric_anneal_data_lambda
-        ) * u
+        lam = (
+            self.metric_anneal_data_lambda
+            + (self.metric_anneal_prior_lambda - self.metric_anneal_data_lambda) * u
+        )
         return jnp.clip(lam, a_min=0.0, a_max=1.0)
 
     def kinetic_metric_diag(
@@ -282,8 +282,12 @@ class ExtrinsicMaskedTorus:
         batch, d = shape
         if d != self.extrinsic_dim:
             raise ValueError(f"Expected shape[-1]={self.extrinsic_dim}, got {d}")
-        theta = jax.random.uniform(rng, (batch, self.dim), minval=-jnp.pi, maxval=jnp.pi, dtype=jnp.float32)
-        out = jnp.stack([jnp.cos(theta), jnp.sin(theta)], axis=-1).reshape(batch, self.extrinsic_dim)
+        theta = jax.random.uniform(
+            rng, (batch, self.dim), minval=-jnp.pi, maxval=jnp.pi, dtype=jnp.float32
+        )
+        out = jnp.stack([jnp.cos(theta), jnp.sin(theta)], axis=-1).reshape(
+            batch, self.extrinsic_dim
+        )
         return out * _to_mask(mask, out)
 
     def random_normal_tangent(
@@ -297,4 +301,3 @@ class ExtrinsicMaskedTorus:
         e_theta = jnp.stack([-b[..., 1], b[..., 0]], axis=-1)
         out = self._flatten_pairs(e_theta * z[..., None])
         return out * _to_mask(mask, out)
-

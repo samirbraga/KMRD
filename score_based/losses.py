@@ -22,9 +22,7 @@ def _wrapped_eps_target(
     sigma2_ = sigma2[:, None]
     sqrt_2sig = jnp.sqrt(2.0 * sigma2_)
     sqrt_g = (
-        jnp.ones_like(dtheta_raw)
-        if g_diag_0 is None
-        else jnp.sqrt(jnp.clip(g_diag_0, a_min=1e-8))
+        jnp.ones_like(dtheta_raw) if g_diag_0 is None else jnp.sqrt(jnp.clip(g_diag_0, a_min=1e-8))
     )
     k_vals = jnp.arange(-n_wrap, n_wrap + 1, dtype=dtheta_raw.dtype)
     delta = dtheta_raw[None, :, :] - 2.0 * jnp.pi * k_vals[:, None, None]
@@ -211,12 +209,15 @@ def get_kinetic_score_loss_fn(
         sigma_diag_t = jnp.clip(1.0 / g_diag_t, a_min=1e-8)
 
         dtheta_raw = theta_t - x
-        eps_target = _wrapped_eps_target(
-            dtheta_raw=dtheta_raw,
-            sigma2=sigma2,
-            n_wrap=n_wrap,
-            g_diag_0=g_diag_0,
-        ) * mask
+        eps_target = (
+            _wrapped_eps_target(
+                dtheta_raw=dtheta_raw,
+                sigma2=sigma2,
+                n_wrap=n_wrap,
+                g_diag_0=g_diag_0,
+            )
+            * mask
+        )
 
         eps_pred = _call_model(
             model_apply=model_apply,

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import jax.numpy as jnp
-
 
 @dataclass(frozen=True)
 class LinearBetaSchedule:
@@ -45,4 +43,3 @@ class LinearBetaSchedule:
             beta_0=self.beta_f,
             beta_f=self.beta_0,
         )
-

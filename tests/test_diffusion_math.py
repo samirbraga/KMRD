@@ -53,4 +53,3 @@ def test_metric_anneal_lambda_bounds() -> None:
     )
     assert jnp.all(lam >= 0.0)
     assert jnp.all(lam <= 1.0)
-

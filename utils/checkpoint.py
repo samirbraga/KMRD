@@ -27,4 +27,3 @@ def save_checkpoint(
     }
     with open(path.with_suffix(".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-

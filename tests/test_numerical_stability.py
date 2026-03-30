@@ -3,9 +3,9 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
+from diffgeo.manifold import IntrinsicMaskedTorus, KineticIntrinsicTorus
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.sde_lib import DiffusionMixture
-from diffgeo.manifold import KineticIntrinsicTorus, IntrinsicMaskedTorus
 from score_based.losses import get_flat_score_loss_fn, get_kinetic_score_loss_fn
 from score_based.sampling import sample_intrinsic_batch
 
@@ -38,7 +38,9 @@ def test_extreme_flat_loss_remains_finite() -> None:
 
     x = jax.random.uniform(jax.random.PRNGKey(10), (2, 18), minval=-jnp.pi, maxval=jnp.pi)
     mask = jnp.concatenate([jnp.ones((2, 12)), jnp.zeros((2, 6))], axis=-1).astype(jnp.float32)
-    loss, aux = loss_fn(jax.random.PRNGKey(11), params=jnp.array(0.0), x=x, mask=mask, deterministic=True)
+    loss, aux = loss_fn(
+        jax.random.PRNGKey(11), params=jnp.array(0.0), x=x, mask=mask, deterministic=True
+    )
     assert jnp.isfinite(loss)
     assert jnp.isfinite(aux["sigma2_mean"])
 
@@ -51,7 +53,9 @@ def test_extreme_kinetic_loss_remains_finite() -> None:
 
     x = jax.random.uniform(jax.random.PRNGKey(12), (2, 18), minval=-jnp.pi, maxval=jnp.pi)
     mask = jnp.concatenate([jnp.ones((2, 12)), jnp.zeros((2, 6))], axis=-1).astype(jnp.float32)
-    loss, aux = loss_fn(jax.random.PRNGKey(13), params=jnp.array(0.0), x=x, mask=mask, deterministic=True)
+    loss, aux = loss_fn(
+        jax.random.PRNGKey(13), params=jnp.array(0.0), x=x, mask=mask, deterministic=True
+    )
     assert jnp.isfinite(loss)
     assert jnp.isfinite(aux["sigma2_mean"])
     assert jnp.isfinite(aux["g0_mean"])
@@ -76,4 +80,3 @@ def test_sampling_extreme_schedule_stays_finite_and_masked() -> None:
     )
     assert jnp.all(jnp.isfinite(out))
     assert jnp.allclose(out[:, 12:], 0.0, atol=1e-5)
-

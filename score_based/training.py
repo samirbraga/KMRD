@@ -290,6 +290,14 @@ def make_eval_step_pmap(cfg: ScoreTrainConfig):
     return jax.pmap(eval_step, axis_name="data")
 
 
+def make_train_step_for_mode(cfg: ScoreTrainConfig, distributed: bool):
+    return make_train_step_pmap(cfg) if distributed else make_train_step(cfg)
+
+
+def make_eval_step_for_mode(cfg: ScoreTrainConfig, distributed: bool):
+    return make_eval_step_pmap(cfg) if distributed else make_eval_step(cfg)
+
+
 def train_one_epoch(
     state: TrainState,
     train_batches: Iterable[dict[str, jnp.ndarray]],
@@ -484,3 +492,61 @@ def eval_one_epoch_pmap(
         "sigma2_mean": sigma2_sum / denom,
     }
 
+
+def train_one_epoch_for_mode(
+    state: TrainState,
+    train_batches: Iterable[dict[str, jnp.ndarray]],
+    cfg: ScoreTrainConfig,
+    distributed: bool,
+    epoch: int | None = None,
+    log_every: int = 0,
+    train_step_fn: Any | None = None,
+) -> tuple[TrainState, dict[str, float]]:
+    if distributed:
+        return train_one_epoch_pmap(
+            state=state,
+            train_batches=train_batches,
+            cfg=cfg,
+            epoch=epoch,
+            log_every=log_every,
+            train_step_fn=train_step_fn,
+        )
+    return train_one_epoch(
+        state=state,
+        train_batches=train_batches,
+        cfg=cfg,
+        epoch=epoch,
+        log_every=log_every,
+        train_step_fn=train_step_fn,
+    )
+
+
+def eval_one_epoch_for_mode(
+    state: TrainState,
+    eval_batches: Iterable[dict[str, jnp.ndarray]],
+    cfg: ScoreTrainConfig,
+    distributed: bool,
+    epoch: int | None = None,
+    log_every: int = 0,
+    max_batches: int = 0,
+    eval_step_fn: Any | None = None,
+) -> tuple[TrainState, dict[str, float]]:
+    if distributed:
+        return eval_one_epoch_pmap(
+            state=state,
+            eval_batches=eval_batches,
+            cfg=cfg,
+            epoch=epoch,
+            log_every=log_every,
+            max_batches=max_batches,
+            eval_step_fn=eval_step_fn,
+        )
+    return eval_one_epoch(
+        state=state,
+        eval_batches=eval_batches,
+        cfg=cfg,
+        epoch=epoch,
+        log_every=log_every,
+        max_batches=max_batches,
+        eval_step_fn=eval_step_fn,
+    )

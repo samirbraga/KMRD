@@ -135,6 +135,7 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.11"
+files = ["train.py", "score_based", "diffgeo", "evaluation", "foldingdiff", "RDM", "utils"]
 pretty = true
 show_error_codes = true
 warn_unused_ignores = true

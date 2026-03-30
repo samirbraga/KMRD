@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import jax
 import jax.numpy as jnp
 
-from RDM.sde_lib import DiffusionMixture
 from diffgeo.manifold import to_angles_lengths
+
+if TYPE_CHECKING:
+    from RDM.sde_lib import DiffusionMixture
 
 
 def _wrapped_eps_target(
@@ -240,4 +242,3 @@ def get_kinetic_score_loss_fn(
         }
 
     return loss_fn
-

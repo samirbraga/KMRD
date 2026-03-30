@@ -27,3 +27,7 @@ sampled_pdb/
 .ipynb_checkpoints
 logs/
 .codex
+
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

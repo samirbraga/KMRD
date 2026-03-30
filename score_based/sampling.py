@@ -1,4 +1,4 @@
-"""Shared intrinsic reverse sampling utilities."""
+"""Shared intrinsic reverse sampling utilities for score-based diffusion."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from diffgeo.kinetic_metric import compute_kinetic_metric_diag
-from utils.diffusion_math import (
+from score_based.diffusion_math import (
     beta_t_linear,
     metric_anneal_lambda_from_sigma2,
     sigma2_linear,
@@ -130,3 +130,4 @@ def sample_intrinsic_batch(
 
     x_fin, _ = lax.fori_loop(0, n_steps - 1, _body, (x0, rng))
     return x_fin
+

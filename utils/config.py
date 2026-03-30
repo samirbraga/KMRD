@@ -10,8 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TrainConfig(BaseSettings, cli_parse_args=True):
     model_config = SettingsConfigDict(cli_kebab_case=True)
 
+    training_objective: Literal["score", "bridge_matching"] = "score"
+
     epochs: int = 200
     batch_size: int = 32
+    val_batch_size: int = 0
     learning_rate: float = 1e-4
     weight_decay: float = 1e-2
     lr_sched: bool = False
@@ -67,6 +70,10 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     val_kl_ref_limit: int = 0
     best_metric: Literal["val_loss", "val_kl"] = "val_kl"
     distributed: bool = True
+
+    bridge_num_steps: int = 10
+    bridge_weight_type: Literal["default", "importance"] = "default"
+    bridge_coordinates: Literal["intrinsic", "extrinsic"] = "extrinsic"
 
     wandb_entity: str = "rdem"
     wandb_project: str = "Standard Metric - RiemannDiff"

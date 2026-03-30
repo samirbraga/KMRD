@@ -1,7 +1,7 @@
 """Training utilities for JAX score-based diffusion."""
 
 from .config import TrainConfig
-from .train import (
+from score_based.training import (
     eval_one_epoch,
     eval_one_epoch_pmap,
     make_eval_step,

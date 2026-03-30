@@ -1235,6 +1235,23 @@ http = [
 ]
 
 [[package]]
+name = "geomstats"
+version = "2.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cc/d9/a99cd1b545d0ac3117bc6246e144755559a9a2fed734137db6ec214a083b/geomstats-2.8.0.tar.gz", hash = "sha256:d34df1ed96354859f694dfea2f58080d34f6e82bb0a5e49061d49ec213ef48a0", size = 9887212, upload-time = "2024-09-09T17:41:44.859Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/2e/b8e0c53367d4a55338a4dd4e55cfcd560f5a5441f3906a106cee7cf9f1fb/geomstats-2.8.0-py3-none-any.whl", hash = "sha256:bd167c944586cb822c4cd6466fd70fc0819f6eb9a8c0e3de4971de4033ff4276", size = 10467124, upload-time = "2024-09-09T17:41:39.168Z" },
+]
+
+[[package]]
 name = "gitdb"
 version = "4.0.12"
 source = { registry = "https://pypi.org/simple" }
@@ -4315,6 +4332,7 @@ dependencies = [
     { name = "dotenv" },
     { name = "evaluate" },
     { name = "fsspec", extra = ["http"] },
+    { name = "geomstats" },
     { name = "hydra-colorlog" },
     { name = "hydra-core" },
     { name = "hydra-joblib-launcher" },
@@ -4385,6 +4403,7 @@ requires-dist = [
     { name = "flax", marker = "extra == 'gpu'", specifier = ">=0.12.0" },
     { name = "flax", marker = "extra == 'tpu'", specifier = ">=0.12.0" },
     { name = "fsspec", extras = ["http"], specifier = ">=2021.5.0,!=2021.6.0" },
+    { name = "geomstats", specifier = ">=2.8.0" },
     { name = "hydra-colorlog", specifier = ">=1.2.0" },
     { name = "hydra-core", specifier = ">=1.3.0" },
     { name = "hydra-joblib-launcher", specifier = ">=1.2.0" },

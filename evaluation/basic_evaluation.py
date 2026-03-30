@@ -25,8 +25,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from diffgeo.angles_and_coords import angles_tensor_to_coords
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
-from utils.sampling import sample_intrinsic_batch
-from utils.train import create_train_state
+from score_based.sampling import sample_intrinsic_batch
+from score_based.training import create_train_state
 
 
 FT_NAMES = CathCanonicalAnglesOnlyDataset.feature_names["angles"]

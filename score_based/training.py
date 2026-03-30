@@ -8,11 +8,11 @@ from typing import Any, Iterable, Literal
 import jax
 import jax.numpy as jnp
 import optax
-from jax import lax
 from flax.training import train_state
+from jax import lax
 
 from diffgeo.kinetic_metric import compute_kinetic_metric_diag
-from utils.diffusion_math import (
+from score_based.diffusion_math import (
     metric_anneal_lambda_from_sigma2,
     sigma2_linear,
     to_angles_lengths,
@@ -56,6 +56,7 @@ class ScoreTrainConfig:
     t_eps: float = 1e-5
     n_wrap: int = 2
     max_grad_norm: float = 1.0
+    eval_use_ema: bool = True
 
 
 class TrainState(train_state.TrainState):
@@ -260,7 +261,9 @@ def make_train_step_pmap(cfg: ScoreTrainConfig):
 def make_eval_step(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
-        eval_params = state.ema_params if state.ema_params is not None else state.params
+        eval_params = (
+            state.ema_params if (cfg.eval_use_ema and state.ema_params is not None) else state.params
+        )
         loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         metrics = dict(aux)
         metrics["loss"] = loss
@@ -273,7 +276,9 @@ def make_eval_step(cfg: ScoreTrainConfig):
 def make_eval_step_pmap(cfg: ScoreTrainConfig):
     def eval_step(state: TrainState, batch: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
         rng, step_rng = jax.random.split(state.rng)
-        eval_params = state.ema_params if state.ema_params is not None else state.params
+        eval_params = (
+            state.ema_params if (cfg.eval_use_ema and state.ema_params is not None) else state.params
+        )
         loss, aux = _score_loss(eval_params, state.apply_fn, batch, step_rng, cfg)
         loss = lax.pmean(loss, axis_name="data")
         aux = lax.pmean(aux, axis_name="data")
@@ -349,7 +354,6 @@ def train_one_epoch_pmap(
 
     for batch in train_batches:
         state, metrics = train_step(state, batch)
-        # pmean makes all replicas equal; read from replica 0.
         m_loss = float(jax.device_get(metrics["loss"])[0])
         m_g0 = float(jax.device_get(metrics["g0_mean"])[0])
         m_gt = float(jax.device_get(metrics["gt_mean"])[0])
@@ -479,3 +483,4 @@ def eval_one_epoch_pmap(
         "gt_mean": gt_sum / denom,
         "sigma2_mean": sigma2_sum / denom,
     }
+

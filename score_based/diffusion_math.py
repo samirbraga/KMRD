@@ -1,4 +1,4 @@
-"""Shared JAX math helpers for diffusion training/sampling."""
+"""Shared JAX math helpers for score-based diffusion."""
 
 from __future__ import annotations
 
@@ -45,3 +45,4 @@ def metric_anneal_lambda_from_sigma2(
     u = jnp.power(u, power)
     lam = data_lambda + (prior_lambda - data_lambda) * u
     return jnp.clip(lam, a_min=0.0, a_max=1.0)
+

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import flax.jax_utils as flax_jax_utils
 import flax.serialization
@@ -15,23 +15,28 @@ import numpy as np
 import optax
 import wandb
 
+from RDM.beta_schedule import LinearBetaSchedule
+from RDM.losses import get_bridge_loss_fn
+from RDM.sde_lib import DiffusionMixture
+from RDM.training import intrinsic_to_cossin, make_bridge_train_step, train_one_epoch_bridge
+from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
-from utils.config import TrainConfig
-from utils.sampling import sample_intrinsic_batch
-from utils.train import (
+from score_based.sampling import sample_intrinsic_batch
+from score_based.training import (
+    ScoreTrainConfig,
+    TrainState,
+    create_train_state,
     eval_one_epoch,
     eval_one_epoch_pmap,
     make_eval_step,
     make_eval_step_pmap,
-    ScoreTrainConfig,
-    TrainState,
-    create_train_state,
     make_train_step,
     make_train_step_pmap,
     train_one_epoch,
     train_one_epoch_pmap,
 )
+from utils.config import TrainConfig
 from utils.wandb import (
     download_wandb_checkpoint,
     get_best_scalar_from_wandb,
@@ -192,7 +197,13 @@ def _batch_iter_sharded(
         }
 
 
-def _save_checkpoint(path: Path, state: TrainState, epoch: int, metrics: dict[str, float], cfg: TrainConfig) -> None:
+def _save_checkpoint(
+    path: Path,
+    state: Any,
+    epoch: int,
+    metrics: dict[str, float],
+    cfg: TrainConfig,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         f.write(flax.serialization.to_bytes(state))
@@ -300,6 +311,9 @@ def main() -> None:
             val_ds, limit=cfg.val_kl_ref_limit
         )
 
+    bridge_feat_dim = 12 if (
+        cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic"
+    ) else 6
     model_cfg = BertDiffusionConfig(
         num_attention_heads=cfg.net_size * 4,
         hidden_size=cfg.net_size * 128,
@@ -307,10 +321,12 @@ def main() -> None:
         num_hidden_layers=cfg.net_size * 4,
         hidden_dropout_prob=cfg.dropout,
         attention_probs_dropout_prob=cfg.dropout,
-        input_feat_dim=6,  # intrinsic torsion coordinates
-        torsion_feat_dim=6,
+        input_feat_dim=bridge_feat_dim,
+        torsion_feat_dim=bridge_feat_dim,
         condition_on_g_diag=(
-            cfg.metric_condition_model and cfg.metric_type == "kinetic_diag"
+            cfg.training_objective == "score"
+            and cfg.metric_condition_model
+            and cfg.metric_type == "kinetic_diag"
         ),
     )
     model = BertForDiffusion(config=model_cfg)
@@ -319,6 +335,9 @@ def main() -> None:
 
     init_batch = next(_batch_iter(train_ds, batch_size=min(cfg.batch_size, len(train_ds)), rng=np_rng, shuffle=False))
     sample_x = init_batch["angles"][:, :-1, :].reshape(init_batch["angles"].shape[0], -1)
+    sample_mask = init_batch["geo_mask"]
+    if cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic":
+        sample_x, sample_mask = intrinsic_to_cossin(sample_x, sample_mask)
     if use_distributed:
         steps_per_epoch = len(train_ds) // cfg.batch_size
     else:
@@ -329,12 +348,26 @@ def main() -> None:
         model=model,
         rng=jax_rng,
         sample_x=sample_x,
-        sample_mask=init_batch["geo_mask"],
+        sample_mask=sample_mask,
         learning_rate=learning_rate,
         weight_decay=cfg.weight_decay,
         use_ema=cfg.use_ema,
         ema_decay=cfg.ema_decay,
     )
+    state_b_single = None
+    model_b = None
+    if cfg.training_objective == "bridge_matching":
+        model_b = BertForDiffusion(config=model_cfg)
+        state_b_single = create_train_state(
+            model=model_b,
+            rng=jax.random.PRNGKey(cfg.seed + 1337),
+            sample_x=sample_x,
+            sample_mask=sample_mask,
+            learning_rate=learning_rate,
+            weight_decay=cfg.weight_decay,
+            use_ema=cfg.use_ema,
+            ema_decay=cfg.ema_decay,
+        )
     start_epoch = 1
     if cfg.resume_run:
         if cfg.resume_checkpoint_path:
@@ -349,7 +382,17 @@ def main() -> None:
                 artifact_name=cfg.checkpoint_artifact_name,
                 out_dir=Path(cfg.weights_path),
             )
-        state_single = flax.serialization.from_bytes(state_single, resume_ckpt.read_bytes())
+        ckpt_bytes = resume_ckpt.read_bytes()
+        if cfg.training_objective == "bridge_matching":
+            raw_state = flax.serialization.msgpack_restore(ckpt_bytes)
+            if isinstance(raw_state, dict) and "state_f" in raw_state and "state_b" in raw_state:
+                state_single = flax.serialization.from_state_dict(state_single, raw_state["state_f"])
+                assert state_b_single is not None
+                state_b_single = flax.serialization.from_state_dict(state_b_single, raw_state["state_b"])
+            else:
+                state_single = flax.serialization.from_bytes(state_single, ckpt_bytes)
+        else:
+            state_single = flax.serialization.from_bytes(state_single, ckpt_bytes)
         start_epoch = get_resume_epoch_from_wandb(
             entity=cfg.wandb_entity,
             project=cfg.wandb_project,
@@ -358,6 +401,103 @@ def main() -> None:
         print(f"resumed_checkpoint={resume_ckpt}")
         print(f"resumed_start_epoch={start_epoch}")
     state: TrainState = flax_jax_utils.replicate(state_single) if use_distributed else state_single
+
+    if cfg.training_objective == "bridge_matching":
+        if use_distributed:
+            raise ValueError("training_objective=bridge_matching currently supports only distributed=false")
+        assert model_b is not None and state_b_single is not None
+
+        if cfg.bridge_coordinates == "extrinsic":
+            manifold = ExtrinsicMaskedTorus(dim=sample_x.shape[-1] // 2)
+            preprocess_fn = intrinsic_to_cossin
+        else:
+            manifold = IntrinsicMaskedTorus(dim=sample_x.shape[-1])
+            preprocess_fn = lambda x, m: (x, m)
+        beta_schedule = LinearBetaSchedule(
+            tf=1.0,
+            t0=0.0,
+            beta_0=cfg.beta_0,
+            beta_f=cfg.beta_f,
+        )
+        mix = DiffusionMixture(
+            manifold=manifold,
+            beta_schedule=beta_schedule,
+            prior_type="unif",
+            drift_scale=1.0,
+            mix_type="log",
+        )
+        bridge_loss_fn = get_bridge_loss_fn(
+            mix=mix,
+            model_apply_f=model.apply,
+            model_apply_b=model_b.apply,
+            reduce_mean=False,
+            eps=cfg.t_eps,
+            num_steps=cfg.bridge_num_steps,
+            weight_type=cfg.bridge_weight_type,
+            normalize_by_dim=True,
+        )
+        bridge_train_step = make_bridge_train_step(
+            loss_fn=bridge_loss_fn,
+            grad_norm=cfg.grad_norm,
+            preprocess_fn=preprocess_fn,
+        )
+        state_f = state_single
+        state_b = state_b_single
+        ckpt_root = Path(cfg.weights_path)
+        ckpt_root.mkdir(parents=True, exist_ok=True)
+
+        best_bridge_loss = float("inf")
+        print(
+            f"Training start: objective=bridge_matching n_train={len(train_ds)} batch={cfg.batch_size} "
+            f"steps={cfg.bridge_num_steps} weight={cfg.bridge_weight_type} "
+            f"coords={cfg.bridge_coordinates}"
+        )
+        for epoch in range(start_epoch, cfg.epochs + 1):
+            batches = _batch_iter(train_ds, batch_size=cfg.batch_size, rng=np_rng, shuffle=True)
+            state_f, state_b, metrics = train_one_epoch_bridge(
+                state_f=state_f,
+                state_b=state_b,
+                train_batches=batches,
+                train_step_fn=bridge_train_step,
+                epoch=epoch,
+                log_every=cfg.train_log_every,
+            )
+            print(
+                f"epoch={epoch:04d} loss={metrics['loss']:.6f} "
+                f"loss_f={metrics['loss_f']:.6f} loss_b={metrics['loss_b']:.6f}"
+            )
+            is_best = metrics["loss"] < best_bridge_loss
+            if is_best:
+                best_bridge_loss = metrics["loss"]
+
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "loss": metrics["loss"],
+                        "bridge_loss_f": metrics["loss_f"],
+                        "bridge_loss_b": metrics["loss_b"],
+                        "best_bridge_loss": best_bridge_loss,
+                    },
+                    step=epoch,
+                )
+
+            if cfg.save_every_epochs > 0 and (epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs or is_best):
+                ckpt_path = ckpt_root / f"model_epoch_{epoch:04d}.msgpack"
+                save_state = {"state_f": state_f, "state_b": state_b}
+                _save_checkpoint(ckpt_path, save_state, epoch, metrics, cfg)
+                print(f"saved={ckpt_path}")
+                if wandb_run is not None:
+                    wandb_run.log({"checkpoint_path": str(ckpt_path)}, step=epoch)
+                    log_checkpoint_artifact(
+                        wandb_run,
+                        ckpt_path=ckpt_path,
+                        epoch=epoch,
+                        is_best=is_best,
+                        artifact_name=cfg.checkpoint_artifact_name,
+                    )
+        if wandb_run is not None:
+            wandb_run.finish()
+        return
 
     loss_cfg = ScoreTrainConfig(
         coordinate_system="intrinsic",
@@ -376,13 +516,15 @@ def main() -> None:
         t_eps=cfg.t_eps,
         n_wrap=cfg.n_wrap,
         max_grad_norm=cfg.grad_norm,
+        eval_use_ema=cfg.eval_use_ema,
     )
 
     ckpt_root = Path(cfg.weights_path)
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"Training start: n_train={len(train_ds)} n_val={len(val_ds)} batch={cfg.batch_size} "
+        f"Training start: objective=score n_train={len(train_ds)} n_val={len(val_ds)} batch={cfg.batch_size} "
+        f"val_batch={cfg.val_batch_size if cfg.val_batch_size > 0 else cfg.batch_size} "
         f"metric={cfg.metric_type} cond_g={model_cfg.condition_on_g_diag} "
         f"devices={n_devices} distributed={use_distributed} "
         f"lr_sched={cfg.lr_sched} lr_type={cfg.lr_schedule_type if cfg.lr_sched else 'constant'} "
@@ -412,6 +554,7 @@ def main() -> None:
     )
     if cfg.best_metric == "val_kl" and not cfg.val_kl_enable:
         raise ValueError("best_metric=val_kl requires val_kl_enable=true")
+    val_batch_size = cfg.val_batch_size if cfg.val_batch_size > 0 else cfg.batch_size
     for epoch in range(start_epoch, cfg.epochs + 1):
         if use_distributed:
             batches = _batch_iter_sharded(
@@ -455,7 +598,7 @@ def main() -> None:
             if use_distributed:
                 val_batches = _batch_iter_sharded(
                     val_ds,
-                    global_batch_size=cfg.batch_size,
+                    global_batch_size=val_batch_size,
                     rng=np_rng,
                     n_devices=n_devices,
                     shuffle=False,
@@ -472,7 +615,7 @@ def main() -> None:
             else:
                 val_batches = _batch_iter(
                     val_ds,
-                    batch_size=cfg.batch_size,
+                    batch_size=val_batch_size,
                     rng=np_rng,
                     shuffle=False,
                 )

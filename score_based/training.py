@@ -337,13 +337,7 @@ def train_one_epoch(
         n_steps += 1
         if log_every > 0 and (n_steps % log_every == 0):
             prefix = f"epoch={epoch:04d} " if epoch is not None else ""
-            print(
-                f"{prefix}step={n_steps:04d} "
-                f"loss={m_loss:.6f} "
-                f"g0={m_g0:.4f} "
-                f"gt={m_gt:.4f} "
-                f"sigma2={m_s2:.4f}"
-            )
+            print(f"{prefix}step={n_steps:04d} loss={m_loss:.6f} sigma2={m_s2:.4f}")
 
     denom = max(n_steps, 1)
     return state, {
@@ -384,13 +378,7 @@ def train_one_epoch_pmap(
         n_steps += 1
         if log_every > 0 and (n_steps % log_every == 0):
             prefix = f"epoch={epoch:04d} " if epoch is not None else ""
-            print(
-                f"{prefix}step={n_steps:04d} "
-                f"loss={m_loss:.6f} "
-                f"g0={m_g0:.4f} "
-                f"gt={m_gt:.4f} "
-                f"sigma2={m_s2:.4f}"
-            )
+            print(f"{prefix}step={n_steps:04d} loss={m_loss:.6f} sigma2={m_s2:.4f}")
 
     denom = max(n_steps, 1)
     return state, {
@@ -433,13 +421,7 @@ def eval_one_epoch(
         n_steps += 1
         if log_every > 0 and (n_steps % log_every == 0):
             prefix = f"epoch={epoch:04d} " if epoch is not None else ""
-            print(
-                f"{prefix}val_step={n_steps:04d} "
-                f"val_loss={m_loss:.6f} "
-                f"g0={m_g0:.4f} "
-                f"gt={m_gt:.4f} "
-                f"sigma2={m_s2:.4f}"
-            )
+            print(f"{prefix}val_step={n_steps:04d} val_loss={m_loss:.6f} sigma2={m_s2:.4f}")
         if max_batches > 0 and n_steps >= max_batches:
             break
 
@@ -484,13 +466,7 @@ def eval_one_epoch_pmap(
         n_steps += 1
         if log_every > 0 and (n_steps % log_every == 0):
             prefix = f"epoch={epoch:04d} " if epoch is not None else ""
-            print(
-                f"{prefix}val_step={n_steps:04d} "
-                f"val_loss={m_loss:.6f} "
-                f"g0={m_g0:.4f} "
-                f"gt={m_gt:.4f} "
-                f"sigma2={m_s2:.4f}"
-            )
+            print(f"{prefix}val_step={n_steps:04d} val_loss={m_loss:.6f} sigma2={m_s2:.4f}")
         if max_batches > 0 and n_steps >= max_batches:
             break
 

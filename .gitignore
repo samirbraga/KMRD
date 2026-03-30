@@ -23,6 +23,7 @@ proteinmpnn_residues/
 ProteinMPNN/
 omegafold_predictions/
 sampled_pdb/
+playground/
 
 .ipynb_checkpoints
 logs/

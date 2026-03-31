@@ -74,6 +74,9 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
     bridge_num_steps: int = 15
     bridge_weight_type: Literal["default", "importance"] = "importance"
     bridge_coordinates: Literal["intrinsic", "extrinsic"] = "extrinsic"
+    bridge_beta_0: float = 0.2
+    bridge_beta_f: float = 0.001
+    bridge_eps: float = 1e-3
 
     wandb_entity: str = "rdem"
     wandb_project: str = "Standard Metric - RiemannDiff"

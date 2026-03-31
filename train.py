@@ -104,8 +104,8 @@ def train_bridge_objective(
     beta_schedule = LinearBetaSchedule(
         tf=1.0,
         t0=0.0,
-        beta_0=cfg.beta_0,
-        beta_f=cfg.beta_f,
+        beta_0=cfg.bridge_beta_0,
+        beta_f=cfg.bridge_beta_f,
     )
     mix = DiffusionMixture(
         manifold=manifold,
@@ -119,7 +119,7 @@ def train_bridge_objective(
         model_apply_f=model.apply,
         model_apply_b=model_b.apply,
         reduce_mean=True,
-        eps=cfg.t_eps,
+        eps=cfg.bridge_eps,
         num_steps=cfg.bridge_num_steps,
         weight_type=cfg.bridge_weight_type,
         normalize_by_dim=True,
@@ -136,7 +136,8 @@ def train_bridge_objective(
     print(
         f"Training start: objective=bridge_matching n_train={len(train_ds)} batch={cfg.batch_size} "
         f"steps={cfg.bridge_num_steps} weight={cfg.bridge_weight_type} "
-        f"coords={cfg.bridge_coordinates}"
+        f"coords={cfg.bridge_coordinates} "
+        f"beta0={cfg.bridge_beta_0} betaf={cfg.bridge_beta_f} eps={cfg.bridge_eps}"
     )
     for epoch in range(start_epoch, cfg.epochs + 1):
         batches = batch_iter(train_ds, batch_size=cfg.batch_size, rng=np_rng, shuffle=True)

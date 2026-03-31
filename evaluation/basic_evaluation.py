@@ -24,8 +24,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import wandb
 from diffgeo.angles_and_coords import angles_tensor_to_coords
+from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
+from RDM.beta_schedule import LinearBetaSchedule
+from RDM.sde_lib import DiffusionMixture
+from RDM.solver import sample_bridge_pc_batch
 from score_based.sampling import sample_intrinsic_batch
 from score_based.training import create_train_state
 
@@ -40,9 +44,18 @@ FT_NAME_MAP = {
 }
 
 
-def _decode_sample_to_angles(x: np.ndarray, length: int, n_feats: int = 6) -> np.ndarray:
+def _decode_sample_to_angles(
+    x: np.ndarray,
+    length: int,
+    coordinate_system: Literal["intrinsic", "extrinsic"] = "intrinsic",
+    n_feats: int = 6,
+) -> np.ndarray:
     n = int((length - 1) * n_feats)
-    vals = x[:n]
+    if coordinate_system == "extrinsic":
+        vals = x[: (2 * n)]
+        vals = np.arctan2(vals[1::2], vals[0::2]).astype(np.float32, copy=False)
+    else:
+        vals = x[:n]
     vals = np.pad(vals, (1, n_feats - 1), mode="constant", constant_values=0.0)
     return vals.reshape(-1, n_feats).astype(np.float32, copy=False)
 
@@ -230,6 +243,9 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
 
     checkpoint_path: str = "weights/model_epoch_0001.msgpack"
     out_dir: str = "sampled"
+    training_objective: Literal["score", "bridge_matching"] = "score"
+    bridge_coordinates: Literal["intrinsic", "extrinsic"] = "extrinsic"
+    bridge_use_pode: bool = True
     metric_type: Literal["kinetic_diag", "flat_torus"] = "kinetic_diag"
 
     n_steps: int = 1000
@@ -274,6 +290,8 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
     metric_anneal_power: float = 1.0
     beta_0: float = 10.0
     beta_f: float = 0.1
+    bridge_beta_0: float = 0.2
+    bridge_beta_f: float = 0.001
 
 
 def _load_config_from_checkpoint_sidecar(cfg: EvalConfig) -> EvalConfig:
@@ -301,7 +319,7 @@ def _load_config_from_checkpoint_sidecar(cfg: EvalConfig) -> EvalConfig:
     return EvalConfig(**merged)
 
 
-def _build_model(cfg: EvalConfig) -> BertForDiffusion:
+def _build_score_model(cfg: EvalConfig) -> BertForDiffusion:
     model_cfg = BertDiffusionConfig(
         num_attention_heads=cfg.net_size * 4,
         hidden_size=cfg.net_size * 128,
@@ -314,6 +332,22 @@ def _build_model(cfg: EvalConfig) -> BertForDiffusion:
         condition_on_g_diag=cfg.metric_condition_model and cfg.metric_type == "kinetic_diag",
     )
     return BertForDiffusion(config=model_cfg)
+
+
+def _build_bridge_models(cfg: EvalConfig) -> tuple[BertForDiffusion, BertForDiffusion]:
+    bridge_feat_dim = 12 if cfg.bridge_coordinates == "extrinsic" else 6
+    model_cfg = BertDiffusionConfig(
+        num_attention_heads=cfg.net_size * 4,
+        hidden_size=cfg.net_size * 128,
+        intermediate_size=cfg.net_size * 256,
+        num_hidden_layers=cfg.net_size * 4,
+        hidden_dropout_prob=cfg.dropout,
+        attention_probs_dropout_prob=cfg.dropout,
+        input_feat_dim=bridge_feat_dim,
+        torsion_feat_dim=6,
+        condition_on_g_diag=False,
+    )
+    return BertForDiffusion(config=model_cfg), BertForDiffusion(config=model_cfg)
 
 
 def _load_params(model: BertForDiffusion, cfg: EvalConfig):
@@ -334,6 +368,26 @@ def _load_params(model: BertForDiffusion, cfg: EvalConfig):
     state = create_train_state(model, jax.random.PRNGKey(0), sample_x, sample_mask)
     loaded = flax.serialization.from_bytes(state, b)
     return loaded.ema_params if getattr(loaded, "ema_params", None) is not None else loaded.params
+
+
+def _extract_eval_params(state_dict):
+    ema_params = state_dict.get("ema_params", None)
+    if ema_params is not None:
+        return ema_params
+    params = state_dict.get("params", None)
+    if params is not None:
+        return params
+    return state_dict
+
+
+def _load_bridge_params(cfg: EvalConfig):
+    b = Path(cfg.checkpoint_path).read_bytes()
+    state_dict = flax.serialization.msgpack_restore(b)
+    if not (isinstance(state_dict, dict) and "state_f" in state_dict and "state_b" in state_dict):
+        raise ValueError(
+            "Bridge evaluation expects checkpoint with {'state_f', 'state_b'}; got incompatible format."
+        )
+    return _extract_eval_params(state_dict["state_f"]), _extract_eval_params(state_dict["state_b"])
 
 
 def _sample_batch(
@@ -368,10 +422,58 @@ def _sample_batch(
     )
 
 
+def _sample_batch_bridge(
+    *,
+    params_f,
+    params_b,
+    model_f: BertForDiffusion,
+    model_b: BertForDiffusion,
+    cfg: EvalConfig,
+    mask: jnp.ndarray,
+    rng: jax.Array,
+) -> jnp.ndarray:
+    manifold_dim = 6 * (cfg.max_seq_len - 1)
+    manifold = (
+        ExtrinsicMaskedTorus(manifold_dim)
+        if cfg.bridge_coordinates == "extrinsic"
+        else IntrinsicMaskedTorus(manifold_dim)
+    )
+    mix = DiffusionMixture(
+        manifold=manifold,
+        beta_schedule=LinearBetaSchedule(
+            tf=1.0,
+            t0=0.0,
+            beta_0=cfg.bridge_beta_0,
+            beta_f=cfg.bridge_beta_f,
+        ),
+        prior_type="unif",
+        drift_scale=1.0,
+        mix_type="log",
+    )
+    return sample_bridge_pc_batch(
+        params_f=params_f,
+        params_b=params_b,
+        model_apply_f=model_f.apply,
+        model_apply_b=model_b.apply,
+        mix=mix,
+        mask=mask,
+        rng=rng,
+        n_steps=cfg.n_steps,
+        eps=cfg.eps,
+        use_pode=cfg.bridge_use_pode,
+    )
+
+
 def main() -> None:
     cfg = _load_config_from_checkpoint_sidecar(EvalConfig())
-    model = _build_model(cfg)
-    params = _load_params(model, cfg)
+    if cfg.training_objective == "bridge_matching":
+        model_f, model_b = _build_bridge_models(cfg)
+        params_f, params_b = _load_bridge_params(cfg)
+        coord_for_decode = cfg.bridge_coordinates
+    else:
+        model = _build_score_model(cfg)
+        params = _load_params(model, cfg)
+        coord_for_decode = "intrinsic"
 
     out_dir = Path(cfg.out_dir)
     pdb_dir = out_dir / "sampled_pdb"
@@ -390,16 +492,34 @@ def main() -> None:
     pdb_paths: list[Path] = []
     saved = 0
     d = 6 * (cfg.max_seq_len - 1)
-
-    sample_batch_compiled = jax.jit(
-        lambda mask_in, rng_in: _sample_batch(
-            params=params,
-            model=model,
-            mask=mask_in,
-            cfg=cfg,
-            rng=rng_in,
-        )
+    d_sample = (
+        d * 2
+        if cfg.training_objective == "bridge_matching" and cfg.bridge_coordinates == "extrinsic"
+        else d
     )
+
+    if cfg.training_objective == "bridge_matching":
+        sample_batch_compiled = jax.jit(
+            lambda mask_in, rng_in: _sample_batch_bridge(
+                params_f=params_f,
+                params_b=params_b,
+                model_f=model_f,
+                model_b=model_b,
+                cfg=cfg,
+                mask=mask_in,
+                rng=rng_in,
+            )
+        )
+    else:
+        sample_batch_compiled = jax.jit(
+            lambda mask_in, rng_in: _sample_batch(
+                params=params,
+                model=model,
+                mask=mask_in,
+                cfg=cfg,
+                rng=rng_in,
+            )
+        )
 
     total_batches = (len(lengths_arr) + cfg.batch_size - 1) // cfg.batch_size
     print(
@@ -421,10 +541,19 @@ def main() -> None:
         rng, step_rng = jax.random.split(rng)
         x = sample_batch_compiled(jnp.asarray(mask), step_rng)
         x_np = np.asarray(jax.device_get(x), dtype=np.float32)[:b]
+        if x_np.shape[-1] != d_sample:
+            raise ValueError(
+                f"Unexpected sampled shape {x_np.shape}; expected trailing dim {d_sample}"
+            )
 
         for i in range(b):
             length_i = int(batch_lengths[i])
-            angles = _decode_sample_to_angles(x_np[i], length_i, n_feats=6)
+            angles = _decode_sample_to_angles(
+                x_np[i],
+                length_i,
+                coordinate_system=coord_for_decode,
+                n_feats=6,
+            )
             decoded.append(angles)
             np.save(out_dir / f"sample_len{length_i}_{saved:06d}.npy", angles)
             pdb_path = pdb_dir / f"rec_prot_{length_i}_sample_{saved:06d}.pdb"

@@ -4,7 +4,7 @@ from diffgeo.manifold import ExtrinsicMaskedTorus, IntrinsicMaskedTorus, Kinetic
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
-from RDM.solver import get_twoway_sampler
+from RDM.solver import get_twoway_sampler, sample_bridge_pc_batch
 from RDM.training import (
     batch_to_x_mask,
     intrinsic_to_cossin,
@@ -23,6 +23,7 @@ __all__ = [
     "get_flat_score_loss_fn",
     "get_kinetic_score_loss_fn",
     "get_twoway_sampler",
+    "sample_bridge_pc_batch",
     "batch_to_x_mask",
     "intrinsic_to_cossin",
     "make_bridge_train_step",

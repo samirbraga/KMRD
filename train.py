@@ -20,7 +20,11 @@ from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
 from RDM.solver import sample_bridge_pc_batch
-from RDM.training import intrinsic_to_cossin, make_bridge_train_step, train_one_epoch_bridge
+from RDM.training import (
+    intrinsic_to_cossin,
+    make_bridge_train_step_for_mode,
+    train_one_epoch_bridge_for_mode,
+)
 from score_based.sampling import sample_intrinsic_batch
 from score_based.training import (
     ScoreTrainConfig,
@@ -89,13 +93,10 @@ def train_bridge_objective(
     val_ref_lengths: np.ndarray | None,
     start_epoch: int,
     np_rng: np.random.Generator,
+    use_distributed: bool,
+    n_devices: int,
     wandb_run: Any,
 ) -> None:
-    if cfg.distributed and jax.local_device_count() > 1:
-        raise ValueError(
-            "training_objective=bridge_matching currently supports only distributed=false"
-        )
-
     def _identity_preprocess(x, m):
         return x, m
 
@@ -128,10 +129,11 @@ def train_bridge_objective(
         weight_type=cfg.bridge_weight_type,
         normalize_by_dim=True,
     )
-    bridge_train_step = make_bridge_train_step(
+    bridge_train_step = make_bridge_train_step_for_mode(
         loss_fn=bridge_loss_fn,
         grad_norm=cfg.grad_norm,
         preprocess_fn=preprocess_fn,
+        distributed=use_distributed,
     )
     ckpt_root = Path(cfg.weights_path)
     ckpt_root.mkdir(parents=True, exist_ok=True)
@@ -161,16 +163,24 @@ def train_bridge_objective(
     print(
         f"Training start: objective=bridge_matching n_train={len(train_ds)} batch={cfg.batch_size} "
         f"steps={cfg.bridge_num_steps} weight={cfg.bridge_weight_type} "
-        f"coords={cfg.bridge_coordinates} "
+        f"coords={cfg.bridge_coordinates} devices={n_devices} distributed={use_distributed} "
         f"beta0={cfg.bridge_beta_0} betaf={cfg.bridge_beta_f} eps={cfg.bridge_eps}"
     )
     for epoch in range(start_epoch, cfg.epochs + 1):
-        batches = batch_iter(train_ds, batch_size=cfg.batch_size, rng=np_rng, shuffle=True)
-        state_f, state_b, metrics = train_one_epoch_bridge(
+        batches = batch_iter_for_mode(
+            dataset=train_ds,
+            batch_size=cfg.batch_size,
+            rng=np_rng,
+            distributed=use_distributed,
+            n_devices=n_devices,
+            shuffle=True,
+        )
+        state_f, state_b, metrics = train_one_epoch_bridge_for_mode(
             state_f=state_f,
             state_b=state_b,
             train_batches=batches,
             train_step_fn=bridge_train_step,
+            distributed=use_distributed,
             epoch=epoch,
             log_every=cfg.train_log_every,
         )
@@ -190,10 +200,12 @@ def train_bridge_objective(
             and ((epoch - cfg.start_eval_epoch) % max(1, cfg.val_freq) == 0)
         )
         if should_eval and cfg.val_kl_enable and val_ref_angles is not None and val_ref_lengths is not None:
+            eval_state_f = flax_jax_utils.unreplicate(state_f) if use_distributed else state_f
+            eval_state_b = flax_jax_utils.unreplicate(state_b) if use_distributed else state_b
             val_kl = compute_val_kl(
                 params=(
-                    params_for_eval(state_f, cfg.eval_use_ema),
-                    params_for_eval(state_b, cfg.eval_use_ema),
+                    params_for_eval(eval_state_f, cfg.eval_use_ema),
+                    params_for_eval(eval_state_b, cfg.eval_use_ema),
                 ),
                 cfg=cfg,
                 reference_angles=val_ref_angles,
@@ -224,7 +236,10 @@ def train_bridge_objective(
             epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs or is_best
         ):
             ckpt_path = ckpt_root / f"model_epoch_{epoch:04d}.msgpack"
-            save_state = {"state_f": state_f, "state_b": state_b}
+            save_state = {
+                "state_f": flax_jax_utils.unreplicate(state_f) if use_distributed else state_f,
+                "state_b": flax_jax_utils.unreplicate(state_b) if use_distributed else state_b,
+            }
             save_checkpoint(ckpt_path, save_state, epoch, metrics, cfg)
             print(f"saved={ckpt_path}")
             if wandb_run is not None:
@@ -597,19 +612,27 @@ def main() -> None:
     try:
         if cfg.training_objective == "bridge_matching":
             assert model_b is not None and state_b_single is not None
+            state_f_bridge: TrainState = (
+                flax_jax_utils.replicate(state_single) if use_distributed else state_single
+            )
+            state_b_bridge: TrainState = (
+                flax_jax_utils.replicate(state_b_single) if use_distributed else state_b_single
+            )
             train_bridge_objective(
                 cfg=cfg,
                 train_ds=train_ds,
                 model=model,
                 model_b=model_b,
-                state_f=state_single,
-                state_b=state_b_single,
+                state_f=state_f_bridge,
+                state_b=state_b_bridge,
                 sample_x=sample_x,
                 val_ds=val_ds,
                 val_ref_angles=val_ref_angles,
                 val_ref_lengths=val_ref_lengths,
                 start_epoch=start_epoch,
                 np_rng=np_rng,
+                use_distributed=use_distributed,
+                n_devices=n_devices,
                 wandb_run=wandb_run,
             )
         elif cfg.training_objective == "score":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldingdiff.bert_for_diffusion import BertDiffusionConfig, BertForDiffusion
 
@@ -99,3 +100,39 @@ def test_padded_gdiag_values_do_not_change_valid_outputs_when_conditioned() -> N
         deterministic=True,
     )
     assert jnp.allclose(y[:, :valid_d], y_alt[:, :valid_d], atol=1e-5)
+
+
+def test_relative_position_jit_with_numpy_backed_params() -> None:
+    model = _build_model(condition_on_g=False)
+    bsz, d = 2, 18
+    mask = jnp.ones((bsz, d), dtype=jnp.float32)
+    x = jax.random.normal(jax.random.PRNGKey(6), (bsz, d))
+    t = jnp.full((bsz,), 0.5, dtype=jnp.float32)
+    variables = model.init(
+        {"params": jax.random.PRNGKey(7), "dropout": jax.random.PRNGKey(8)},
+        inputs=x,
+        timestep=t,
+        mask=mask,
+        manifold=None,
+        g_diag=None,
+        deterministic=True,
+    )
+
+    # Simulate checkpoint-loaded params where leaves are plain NumPy arrays.
+    np_params = jax.tree_util.tree_map(lambda a: np.asarray(a), variables["params"])
+
+    @jax.jit
+    def apply_with_np_params(inp: jnp.ndarray, timestep: jnp.ndarray) -> jnp.ndarray:
+        return model.apply(
+            {"params": np_params},
+            inputs=inp,
+            timestep=timestep,
+            mask=mask,
+            manifold=None,
+            g_diag=None,
+            deterministic=True,
+        )
+
+    y = apply_with_np_params(x, t)
+    assert y.shape == x.shape
+    assert jnp.all(jnp.isfinite(y))

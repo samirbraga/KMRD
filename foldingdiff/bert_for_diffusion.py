@@ -94,6 +94,9 @@ class BertLayer(nn.Module):
                 nn.initializers.normal(stddev=0.02),
                 (2 * max_pos - 1, head_dim),
             )
+            # Checkpoint leaves may come back as NumPy arrays; ensure JAX indexing
+            # works with traced indices inside jit/scan paths.
+            rel_table = jnp.asarray(rel_table)
             pos_q = jnp.arange(seq_len)[:, None]
             pos_k = jnp.arange(seq_len)[None, :]
             rel_idx = jnp.clip(pos_q - pos_k + (max_pos - 1), 0, 2 * max_pos - 2)

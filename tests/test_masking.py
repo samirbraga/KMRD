@@ -67,7 +67,9 @@ def test_intrinsic_and_extrinsic_manifold_projection_respects_mask() -> None:
     x_ext = jnp.ones((1, 36), dtype=jnp.float32)
     mask_ext = jnp.concatenate([jnp.ones((1, 24)), jnp.zeros((1, 12))], axis=-1)
     y_ext = m_ext.projection(x_ext, mask=mask_ext)
-    assert jnp.allclose(y_ext[:, 24:], 0.0)
+    y_pairs = y_ext.reshape(1, 18, 2)
+    assert jnp.allclose(y_pairs[:, 12:, 0], 1.0)
+    assert jnp.allclose(y_pairs[:, 12:, 1], 0.0)
 
 
 def test_flat_score_loss_invariant_to_masked_dimensions() -> None:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 
 
@@ -22,6 +23,8 @@ class BertDiffusionConfig:
     layer_norm_eps: float = 1e-12
     input_feat_dim: int = 12
     torsion_feat_dim: int = 6
+    max_position_embeddings: int = 512
+    relative_position: bool = True
     condition_on_g_diag: bool = False
     is_decoder: bool = False
 
@@ -41,11 +44,10 @@ class GaussianFourierProjection(nn.Module):
 
         # Keep the same semantics as the PyTorch implementation:
         # W ~ N(0, scale^2), then multiply by 2*pi again during projection.
-        w = self.param(
-            "W",
-            nn.initializers.normal(stddev=self.scale),
-            (self.embed_dim // 2,),
-        )
+        # Parity note: old Torch implementation stored this as a non-trainable buffer.
+        key = jax.random.PRNGKey(0)
+        w = jax.random.normal(key, (self.embed_dim // 2,), dtype=jnp.float32) * self.scale
+        w = w.astype(x.dtype)
         x_proj = x[:, None] * w[None, :] * (2.0 * jnp.pi)
         return jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
 
@@ -60,22 +62,57 @@ class BertLayer(nn.Module):
         self, hidden_states: jnp.ndarray, attention_mask: jnp.ndarray, deterministic: bool
     ) -> jnp.ndarray:
         cfg = self.config
+        if cfg.hidden_size % cfg.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size ({cfg.hidden_size}) must be divisible by "
+                f"num_attention_heads ({cfg.num_attention_heads})"
+            )
+        head_dim = cfg.hidden_size // cfg.num_attention_heads
 
         # Attention block
         residual = hidden_states
-        attn_out = nn.MultiHeadDotProductAttention(
-            num_heads=cfg.num_attention_heads,
-            qkv_features=cfg.hidden_size,
-            out_features=cfg.hidden_size,
-            dropout_rate=cfg.attention_probs_dropout_prob,
-            use_bias=True,
-            name="self_attention",
-        )(
-            hidden_states,
-            hidden_states,
-            mask=attention_mask,
-            deterministic=deterministic,
+
+        q = nn.Dense(cfg.hidden_size, use_bias=True, name="self_attention_query")(hidden_states)
+        k = nn.Dense(cfg.hidden_size, use_bias=True, name="self_attention_key")(hidden_states)
+        v = nn.Dense(cfg.hidden_size, use_bias=True, name="self_attention_value")(hidden_states)
+
+        bsz, seq_len, _ = hidden_states.shape
+        q = q.reshape(bsz, seq_len, cfg.num_attention_heads, head_dim).transpose(0, 2, 1, 3)
+        k = k.reshape(bsz, seq_len, cfg.num_attention_heads, head_dim).transpose(0, 2, 1, 3)
+        v = v.reshape(bsz, seq_len, cfg.num_attention_heads, head_dim).transpose(0, 2, 1, 3)
+
+        attn_scores = jnp.einsum("bhqd,bhkd->bhqk", q, k) / jnp.sqrt(
+            jnp.asarray(head_dim, dtype=hidden_states.dtype)
         )
+
+        if cfg.relative_position:
+            max_pos = int(cfg.max_position_embeddings)
+            if max_pos <= 0:
+                raise ValueError(f"max_position_embeddings must be > 0, got {max_pos}")
+            rel_table = self.param(
+                "self_attention_distance_embedding",
+                nn.initializers.normal(stddev=0.02),
+                (2 * max_pos - 1, head_dim),
+            )
+            pos_q = jnp.arange(seq_len)[:, None]
+            pos_k = jnp.arange(seq_len)[None, :]
+            rel_idx = jnp.clip(pos_q - pos_k + (max_pos - 1), 0, 2 * max_pos - 2)
+            rel_emb = rel_table[rel_idx]  # (Q, K, D)
+            rel_scores = jnp.einsum("bhqd,qkd->bhqk", q, rel_emb)
+            attn_scores = attn_scores + rel_scores
+
+        if attention_mask is not None:
+            neg = jnp.finfo(attn_scores.dtype).min
+            attn_scores = jnp.where(attention_mask, attn_scores, neg)
+
+        attn_probs = jax.nn.softmax(attn_scores, axis=-1)
+        attn_probs = nn.Dropout(
+            rate=cfg.attention_probs_dropout_prob, name="self_attention_dropout"
+        )(attn_probs, deterministic=deterministic)
+
+        context = jnp.einsum("bhqk,bhkd->bhqd", attn_probs, v)
+        context = context.transpose(0, 2, 1, 3).reshape(bsz, seq_len, cfg.hidden_size)
+        attn_out = nn.Dense(cfg.hidden_size, use_bias=True, name="self_attention_output")(context)
         attn_out = nn.Dropout(rate=cfg.hidden_dropout_prob, name="attn_dropout")(
             attn_out, deterministic=deterministic
         )

@@ -261,12 +261,31 @@ class ExtrinsicMaskedTorus:
     def _flatten_pairs(x: jnp.ndarray) -> jnp.ndarray:
         return x.reshape(*x.shape[:-2], -1)
 
+    def _intrinsic_mask(self, mask: Optional[jnp.ndarray], like_pairs: jnp.ndarray) -> jnp.ndarray:
+        if mask is None:
+            return jnp.ones(like_pairs.shape[:-1], dtype=like_pairs.dtype)
+        m = jnp.asarray(mask, dtype=like_pairs.dtype)
+        if m.shape[-1] == self.dim:
+            return m
+        if m.shape[-1] == self.extrinsic_dim:
+            mp = self._reshape_pairs(m)
+            # Accept either repeated intrinsic masks or arbitrary pairwise masks.
+            return jnp.max(mp, axis=-1)
+        raise ValueError(
+            f"Extrinsic mask shape mismatch: expected last dim {self.dim} or {self.extrinsic_dim}, got {m.shape[-1]}"
+        )
+
+    def _apply_mask_identity(self, pairs: jnp.ndarray, mask: Optional[jnp.ndarray]) -> jnp.ndarray:
+        m = self._intrinsic_mask(mask, pairs)[..., None]
+        fill = jnp.asarray([1.0, 0.0], dtype=pairs.dtype)
+        return jnp.where(m > 0.0, pairs, fill)
+
     def projection(self, point: jnp.ndarray, mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         p = self._reshape_pairs(point)
         norm = jnp.linalg.norm(p, axis=-1, keepdims=True)
         p = p / jnp.clip(norm, a_min=1e-8)
-        out = self._flatten_pairs(p)
-        return out * self._expand_mask(mask, out)
+        p = self._apply_mask_identity(p, mask)
+        return self._flatten_pairs(p)
 
     def to_tangent(
         self,
@@ -278,8 +297,8 @@ class ExtrinsicMaskedTorus:
         b = self._reshape_pairs(base_point)
         inner = jnp.sum(v * b, axis=-1, keepdims=True)
         t = v - inner * b
-        out = self._flatten_pairs(t)
-        return out * self._expand_mask(mask, out)
+        t = self._apply_mask_identity(t, mask)
+        return self._flatten_pairs(t)
 
     def log(
         self,
@@ -293,8 +312,9 @@ class ExtrinsicMaskedTorus:
         theta_b = jnp.arctan2(b[..., 1], b[..., 0])
         dtheta = jnp.arctan2(jnp.sin(theta_p - theta_b), jnp.cos(theta_p - theta_b))
         e_theta = jnp.stack([-b[..., 1], b[..., 0]], axis=-1)
-        out = self._flatten_pairs(e_theta * dtheta[..., None])
-        return out * self._expand_mask(mask, out)
+        out = e_theta * dtheta[..., None]
+        out = self._apply_mask_identity(out, mask)
+        return self._flatten_pairs(out)
 
     def exp(
         self,
@@ -328,7 +348,9 @@ class ExtrinsicMaskedTorus:
         out = jnp.stack([jnp.cos(theta), jnp.sin(theta)], axis=-1).reshape(
             batch, self.extrinsic_dim
         )
-        return out * self._expand_mask(mask, out)
+        out_pairs = self._reshape_pairs(out)
+        out_pairs = self._apply_mask_identity(out_pairs, mask)
+        return self._flatten_pairs(out_pairs)
 
     def random_normal_tangent(
         self,
@@ -339,5 +361,6 @@ class ExtrinsicMaskedTorus:
         b = self._reshape_pairs(base_point)
         z = jax.random.normal(rng, shape=b.shape[:-1], dtype=base_point.dtype)
         e_theta = jnp.stack([-b[..., 1], b[..., 0]], axis=-1)
-        out = self._flatten_pairs(e_theta * z[..., None])
-        return out * self._expand_mask(mask, out)
+        out = e_theta * z[..., None]
+        out = self._apply_mask_identity(out, mask)
+        return self._flatten_pairs(out)

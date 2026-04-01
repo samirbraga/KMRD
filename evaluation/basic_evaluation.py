@@ -278,6 +278,7 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
     max_seq_len: int = 128
     net_size: int = 1
     dropout: float = 0.1
+    relative_position: bool = True
     metric_condition_model: bool = True
     metric_cutoff: float = 10.0
     metric_eps: float = 1e-3
@@ -329,6 +330,8 @@ def _build_score_model(cfg: EvalConfig) -> BertForDiffusion:
         attention_probs_dropout_prob=cfg.dropout,
         input_feat_dim=6,
         torsion_feat_dim=6,
+        max_position_embeddings=cfg.max_seq_len,
+        relative_position=cfg.relative_position,
         condition_on_g_diag=cfg.metric_condition_model and cfg.metric_type == "kinetic_diag",
     )
     return BertForDiffusion(config=model_cfg)
@@ -345,6 +348,8 @@ def _build_bridge_models(cfg: EvalConfig) -> tuple[BertForDiffusion, BertForDiff
         attention_probs_dropout_prob=cfg.dropout,
         input_feat_dim=bridge_feat_dim,
         torsion_feat_dim=6,
+        max_position_embeddings=cfg.max_seq_len,
+        relative_position=cfg.relative_position,
         condition_on_g_diag=False,
     )
     return BertForDiffusion(config=model_cfg), BertForDiffusion(config=model_cfg)

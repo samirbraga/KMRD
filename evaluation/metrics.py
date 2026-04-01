@@ -10,9 +10,18 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def decode_sample_to_angles(x: np.ndarray, length: int, n_feats: int = 6) -> np.ndarray:
+def decode_sample_to_angles(
+    x: np.ndarray,
+    length: int,
+    n_feats: int = 6,
+    coordinate_system: str = "intrinsic",
+) -> np.ndarray:
     n = int((length - 1) * n_feats)
-    vals = x[:n]
+    if coordinate_system == "extrinsic":
+        vals = x[: (2 * n)]
+        vals = np.arctan2(vals[1::2], vals[0::2]).astype(np.float32, copy=False)
+    else:
+        vals = x[:n]
     vals = np.pad(vals, (1, n_feats - 1), mode="constant", constant_values=0.0)
     return vals.reshape(-1, n_feats).astype(np.float32, copy=False)
 
@@ -55,6 +64,7 @@ def compute_val_kl(
     val_lengths: np.ndarray,
     epoch: int,
     sample_fn,
+    coordinate_system: str = "intrinsic",
 ) -> float:
     if cfg.val_kl_samples <= 0:
         return float("inf")
@@ -76,7 +86,12 @@ def compute_val_kl(
         x = sample_fn(params, jnp.asarray(mask), step_rng)
         x_np = np.asarray(jax.device_get(x), dtype=np.float32)[:b]
         for i in range(b):
-            angles = decode_sample_to_angles(x_np[i], int(batch_lengths[i]), n_feats=6)
+            angles = decode_sample_to_angles(
+                x_np[i],
+                int(batch_lengths[i]),
+                n_feats=6,
+                coordinate_system=coordinate_system,
+            )
             generated.append(angles)
 
     sampled_angles = np.concatenate(generated, axis=0)

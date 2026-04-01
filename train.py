@@ -452,6 +452,8 @@ def main() -> None:
         attention_probs_dropout_prob=cfg.dropout,
         input_feat_dim=bridge_feat_dim,
         torsion_feat_dim=6,
+        max_position_embeddings=cfg.max_seq_len,
+        relative_position=cfg.relative_position,
         condition_on_g_diag=(
             cfg.training_objective == "score"
             and cfg.metric_condition_model

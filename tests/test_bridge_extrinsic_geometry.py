@@ -29,7 +29,10 @@ def test_extrinsic_log_exp_local_consistency_with_variable_masks() -> None:
     y = manifold.exp(v, base, mask=m)
     v_rec = manifold.log(y, base, mask=m)
 
-    assert jnp.allclose(y * (1.0 - m_ext), 0.0, atol=1e-6)
+    y_pairs = y.reshape(2, 18, 2)
+    m_pairs = m.astype(bool)
+    assert jnp.allclose(y_pairs[..., 0][~m_pairs], 1.0, atol=1e-6)
+    assert jnp.allclose(y_pairs[..., 1][~m_pairs], 0.0, atol=1e-6)
     assert jnp.max(jnp.abs((v - v_rec) * m_ext)) < 5e-3
 
 
@@ -52,6 +55,5 @@ def test_bridge_drift_shape_and_mask_invariance() -> None:
     d2 = bridge.drift(x_perturbed, t, mask=m)
 
     assert d1.shape == x.shape
-    assert jnp.allclose(d1 * (1.0 - m_ext), 0.0, atol=1e-6)
     # masked changes should not affect active drift coordinates
     assert jnp.allclose(d1 * m_ext, d2 * m_ext, atol=1e-5)

@@ -59,10 +59,9 @@ def get_twoway_sampler(
         x = cf * x0 + (1.0 - cf) * xf
 
         ts = jnp.where(choose_forward, t, 1.0 - t)
-        t0 = jnp.full_like(ts, mix.t0 + eps)
-        ts = jnp.clip(ts, a_min=mix.t0 + eps, a_max=mix.tf - eps)
+        t0 = jnp.full_like(ts, mix.t0)
         dt = (ts - t0) / float(n)
-        us = (jnp.arange(n, dtype=x0.dtype) + 0.5) / float(n)
+        us = jnp.linspace(0.0, 1.0, n, dtype=x0.dtype)
 
         def body(carry, u):
             rng_i, x_i = carry

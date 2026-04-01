@@ -35,6 +35,7 @@ class TrainConfig(BaseSettings, cli_parse_args=True):
 
     net_size: int = 3
     dropout: float = 0.1
+    relative_position: bool = True
     metric_condition_model: bool = False
 
     metric_type: Literal["kinetic_diag", "flat_torus"] = "kinetic_diag"

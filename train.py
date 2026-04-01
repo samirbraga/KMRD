@@ -19,6 +19,7 @@ from foldingdiff.dataset import CathCanonicalAnglesOnlyDataset
 from RDM.beta_schedule import LinearBetaSchedule
 from RDM.losses import get_bridge_loss_fn
 from RDM.sde_lib import DiffusionMixture
+from RDM.solver import sample_bridge_pc_batch
 from RDM.training import intrinsic_to_cossin, make_bridge_train_step, train_one_epoch_bridge
 from score_based.sampling import sample_intrinsic_batch
 from score_based.training import (
@@ -83,6 +84,9 @@ def train_bridge_objective(
     state_f: TrainState,
     state_b: TrainState,
     sample_x: jnp.ndarray,
+    val_ds: CathCanonicalAnglesOnlyDataset,
+    val_ref_angles: np.ndarray | None,
+    val_ref_lengths: np.ndarray | None,
     start_epoch: int,
     np_rng: np.random.Generator,
     wandb_run: Any,
@@ -131,8 +135,29 @@ def train_bridge_objective(
     )
     ckpt_root = Path(cfg.weights_path)
     ckpt_root.mkdir(parents=True, exist_ok=True)
+    val_sample_fn = jax.jit(
+        lambda params_pair, m, r: sample_bridge_pc_batch(
+            params_f=params_pair[0],
+            params_b=params_pair[1],
+            model_apply_f=model.apply,
+            model_apply_b=model_b.apply,
+            mix=mix,
+            mask=m,
+            rng=r,
+            n_steps=cfg.val_kl_n_steps,
+            eps=cfg.val_kl_eps,
+            use_pode=True,
+        )
+    )
 
     best_bridge_loss = float("inf")
+    best_val_kl = (
+        get_best_scalar_from_wandb(
+            cfg.wandb_entity, cfg.wandb_project, cfg.resume_run, "best_val_kl"
+        )
+        if cfg.resume_run
+        else float("inf")
+    )
     print(
         f"Training start: objective=bridge_matching n_train={len(train_ds)} batch={cfg.batch_size} "
         f"steps={cfg.bridge_num_steps} weight={cfg.bridge_weight_type} "
@@ -153,20 +178,47 @@ def train_bridge_objective(
             f"epoch={epoch:04d} loss={metrics['loss']:.6f} "
             f"loss_f={metrics['loss_f']:.6f} loss_b={metrics['loss_b']:.6f}"
         )
-        is_best = metrics["loss"] < best_bridge_loss
-        if is_best:
+        improved_bridge = metrics["loss"] < best_bridge_loss
+        if improved_bridge:
             best_bridge_loss = metrics["loss"]
 
-        if wandb_run is not None:
-            wandb_run.log(
-                {
-                    "loss": metrics["loss"],
-                    "bridge_loss_f": metrics["loss_f"],
-                    "bridge_loss_b": metrics["loss_b"],
-                    "best_bridge_loss": best_bridge_loss,
-                },
-                step=epoch,
+        val_kl = None
+        should_eval = bool(
+            cfg.train_val
+            and len(val_ds) > 0
+            and epoch >= cfg.start_eval_epoch
+            and ((epoch - cfg.start_eval_epoch) % max(1, cfg.val_freq) == 0)
+        )
+        if should_eval and cfg.val_kl_enable and val_ref_angles is not None and val_ref_lengths is not None:
+            val_kl = compute_val_kl(
+                params=(
+                    params_for_eval(state_f, cfg.eval_use_ema),
+                    params_for_eval(state_b, cfg.eval_use_ema),
+                ),
+                cfg=cfg,
+                reference_angles=val_ref_angles,
+                val_lengths=val_ref_lengths,
+                epoch=epoch,
+                sample_fn=val_sample_fn,
+                coordinate_system=cfg.bridge_coordinates,
             )
+            print(f"epoch={epoch:04d} val_kl={val_kl:.6f}")
+        improved_val_kl = bool(val_kl is not None and val_kl < best_val_kl)
+        if improved_val_kl and val_kl is not None:
+            best_val_kl = float(val_kl)
+        is_best = improved_val_kl if cfg.best_metric == "val_kl" else improved_bridge
+
+        if wandb_run is not None:
+            payload = {
+                "loss": metrics["loss"],
+                "bridge_loss_f": metrics["loss_f"],
+                "bridge_loss_b": metrics["loss_b"],
+                "best_bridge_loss": best_bridge_loss,
+            }
+            if val_kl is not None:
+                payload["val_kl"] = val_kl
+                payload["best_val_kl"] = best_val_kl
+            wandb_run.log(payload, step=epoch)
 
         if cfg.save_every_epochs > 0 and (
             epoch % cfg.save_every_epochs == 0 or epoch == cfg.epochs or is_best
@@ -553,6 +605,9 @@ def main() -> None:
                 state_f=state_single,
                 state_b=state_b_single,
                 sample_x=sample_x,
+                val_ds=val_ds,
+                val_ref_angles=val_ref_angles,
+                val_ref_lengths=val_ref_lengths,
                 start_epoch=start_epoch,
                 np_rng=np_rng,
                 wandb_run=wandb_run,

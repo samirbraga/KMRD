@@ -720,20 +720,6 @@ def main() -> None:
 
     run = None
     if cfg.wandb_mode != "disabled":
-        upload_pdb_paths = pdb_paths
-        if cfg.save_pdb_samples and len(pdb_paths) > 0:
-            fixed_paths: list[Path] = []
-            fixed_ok = 0
-            for p in pdb_paths:
-                dst = fixed_pdb_dir / p.name
-                if _fix_pdb_file(p, dst):
-                    fixed_paths.append(dst)
-                    fixed_ok += 1
-                else:
-                    fixed_paths.append(p)
-            upload_pdb_paths = fixed_paths
-            print(f"pdbfix_before_wandb fixed={fixed_ok}/{len(pdb_paths)}")
-
         run = wandb.init(
             entity=cfg.wandb_entity,
             project=cfg.wandb_project,
@@ -754,20 +740,28 @@ def main() -> None:
                 ],
             }
         )
-        keep = min(cfg.sample_upload_count, len(upload_pdb_paths))
+        keep = min(cfg.sample_upload_count, len(pdb_paths))
         if keep > 0:
-            idx = np.linspace(0, len(upload_pdb_paths) - 1, num=keep, dtype=int)
+            idx = np.linspace(0, len(pdb_paths) - 1, num=keep, dtype=int)
+            upload_pdb_paths: list[Path] = []
+            fixed_ok = 0
+            for i in idx:
+                src = pdb_paths[int(i)]
+                dst = fixed_pdb_dir / src.name
+                if _fix_pdb_file(src, dst):
+                    upload_pdb_paths.append(dst)
+                    fixed_ok += 1
+                else:
+                    upload_pdb_paths.append(src)
+            print(f"pdbfix_before_wandb fixed={fixed_ok}/{keep}")
             run.log(
                 {
-                    "generated_proteins": [wandb.Molecule(str(upload_pdb_paths[i])) for i in idx],
+                    "generated_proteins": [wandb.Molecule(str(p)) for p in upload_pdb_paths],
                 }
             )
         if cfg.upload_samples_dir_artifact:
             artifact = wandb.Artifact(name="samples", type="dataset")
-            if cfg.save_pdb_samples and fixed_pdb_dir.exists():
-                artifact.add_dir(str(fixed_pdb_dir))
-            else:
-                artifact.add_dir(str(pdb_dir))
+            artifact.add_dir(str(pdb_dir))
             run.log_artifact(artifact)
         run.finish()
 

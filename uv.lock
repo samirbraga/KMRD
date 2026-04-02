@@ -4508,6 +4508,7 @@ dependencies = [
     { name = "pyvista" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+    { name = "tmtools" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "wandb" },
@@ -4595,6 +4596,7 @@ requires-dist = [
     { name = "rdem", extras = ["torch"], marker = "extra == 'tpu'" },
     { name = "scikit-learn", specifier = ">=1.8.0rc1" },
     { name = "seaborn", specifier = ">=0.13.2" },
+    { name = "tmtools", specifier = ">=0.3.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = "==2.9.0" },
     { name = "torch-xla", extras = ["tpu"], marker = "extra == 'tpu'", specifier = "==2.9.0" },
     { name = "torchdiffeq", marker = "extra == 'torch'", specifier = ">=0.2.5" },
@@ -5359,6 +5361,33 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/7a/fd/7a5ee21fd08ff70d3d33a5781c255cbe779659bd03278feb98b19ee550f4/tinycss2-1.4.0.tar.gz", hash = "sha256:10c0972f6fc0fbee87c3edb76549357415e94548c1ae10ebccdea16fb404a9b7", size = 87085, upload-time = "2024-10-24T14:58:29.895Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/34/ebdc18bae6aa14fbee1a08b63c015c72b64868ff7dae68808ab500c492e2/tinycss2-1.4.0-py3-none-any.whl", hash = "sha256:3a49cf47b7675da0b15d0c6e1df8df4ebd96e9394bb905a5775adb0d884c5289", size = 26610, upload-time = "2024-10-24T14:58:28.029Z" },
+]
+
+[[package]]
+name = "tmtools"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4d/31/677c0e06a628f915832d6fdc805728e5f8a62ed8cf6053b6e480b39ab484/tmtools-0.3.0.tar.gz", hash = "sha256:06010d6c2b6272f19b86e6260ce9f3175f3b601fba46520d57a5fa3ce1d4761d", size = 3144542, upload-time = "2025-11-09T06:22:14.9Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/9e/2db263d5d860b1127aabf8270afe4c2fff389ca4c23b0e0a848576c429ac/tmtools-0.3.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:e0f4f5eda0a2c6e7dadd6720f1e956b70dd59cb677a1b18d62ba6d60bcbd6e5f", size = 3281174, upload-time = "2025-11-09T06:21:51.237Z" },
+    { url = "https://files.pythonhosted.org/packages/90/59/1215d9c656992a8ba2c7793e29c48f50490f847af4fcaf4ae77384b3c048/tmtools-0.3.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:0639344b263a054fbe7cd18fea56bdae0e6ae310498ffa6ba569eb025b5e5da6", size = 3269012, upload-time = "2025-11-09T06:21:52.847Z" },
+    { url = "https://files.pythonhosted.org/packages/73/3c/bb09bde745dd940ce8fb96bf80f9990fdb4b5cabb9c9dcac3f770fb8dfd7/tmtools-0.3.0-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:5c7cf5f83bdab941201af9c79e310bee0534794569189a952f7ff0876dcc1a31", size = 3329121, upload-time = "2025-11-09T06:21:54.097Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/72/63ee5cc11a18c4eb3e2bc413041eeea1663f49f568502b8bdc116e98305d/tmtools-0.3.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1f07834954c3a47fb90ab28ae4385292519bdbbb6ff8f10b4022dce84a00b844", size = 3320652, upload-time = "2025-11-09T06:21:55.673Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/7f/46da1d561f78340005f9a2ba8426157a8dfdd6cf426882af8d7e4a0f1bbf/tmtools-0.3.0-cp311-cp311-musllinux_1_1_i686.whl", hash = "sha256:88e025a7be7aaa1b1982714a2bda4115cb28a67a274c733003f7a82cc2e373da", size = 3889462, upload-time = "2025-11-09T06:21:57.577Z" },
+    { url = "https://files.pythonhosted.org/packages/03/00/bad4a399e448bf741fcbabb0dfac78518b43b621d1c26af22050353fb1bc/tmtools-0.3.0-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:4a13d4227f015dd74cea2d976c7461e0747f2d7e6384cad2fc6aa8d0fb5cc7d0", size = 3830263, upload-time = "2025-11-09T06:21:58.737Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/99/3b3233a11fe2bbc04d0bfa1eaaacb8a5a52f0d527b270e16a82064603476/tmtools-0.3.0-cp311-cp311-win32.whl", hash = "sha256:966c492f8f820cd249056ab0927cd51d6c8a6f0a1b4ae426a52731ec14635bbc", size = 3204066, upload-time = "2025-11-09T06:22:00.341Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/47/f8b7a6f57928cc01c33615d03ac06eb327d89699f7c46537cb485a65162d/tmtools-0.3.0-cp311-cp311-win_amd64.whl", hash = "sha256:45d3c8535cbe4e4f3c86057729fc1a7d431d3cf5613e0636c405d07b55a53f1f", size = 3216665, upload-time = "2025-11-09T06:22:01.675Z" },
+    { url = "https://files.pythonhosted.org/packages/af/1e/121fa9bcfb588396c5d1f02986ac411995ad07e1924b329c7c8f09d7737a/tmtools-0.3.0-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:b98b66131a3493a6cfe534748730b01b6b92851122acb725a7c74b82dcb55768", size = 3281938, upload-time = "2025-11-09T06:22:03.032Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/37/fd9f6414933cfdfe4442f5694e9f73cf5b8f24d1c47c3e960b258d6a2555/tmtools-0.3.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:16f79aee1370f28fd6c4ef843f0d2b2c5e9db81ae602facb1fe384d889dfd620", size = 3269207, upload-time = "2025-11-09T06:22:04.198Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/a6/5999830398295403869a0570ace3c4e30737e943b5fee7d0b0cca7d3d020/tmtools-0.3.0-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:52c1fe29ab8230a08a95866be239e33005e9ee2156c3caa152c552d0e3ec04cd", size = 3329048, upload-time = "2025-11-09T06:22:05.787Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/f9/0d4ec2085746545b3d966c04fafb98a707622f964af0709eaddce72569c6/tmtools-0.3.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:74bdea863afa4c6c29b95635fa63c6b3f8eac32c996b95e22be1708c5e4e1205", size = 3320535, upload-time = "2025-11-09T06:22:07.02Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/21/2743c39bf26906b8231469da9b32091be5965efc1e84831a33a22e7a3d69/tmtools-0.3.0-cp312-cp312-musllinux_1_1_i686.whl", hash = "sha256:567542c451872c7893b652b8f3935aceff7da78188970542ad1ad5395e84564b", size = 3889015, upload-time = "2025-11-09T06:22:08.819Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/e1/6110d9f4ce517478040fd33033b8be1f5c1cf45e09ace45ea8c8865a8c90/tmtools-0.3.0-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:cde19ef37a6878fbf2cb7682352b3aa97c4cd6ccb8403517d2f90753c120ee0a", size = 3830476, upload-time = "2025-11-09T06:22:10.388Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/f1/dd2950ad1860ac412de5b159f46187a9cab620710175abc7579efb7a959b/tmtools-0.3.0-cp312-cp312-win32.whl", hash = "sha256:4a9a3c69782fffe87c00bb99e0b8bc994dc58a67d38f0b1c30e87d73895b528b", size = 3204464, upload-time = "2025-11-09T06:22:12.067Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/92/6aecfce9fd3e8d9b43e40647f8968610d11bac53427046d44626e1df8a4a/tmtools-0.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:1f8ffaa020cfe2a705e100a3d2f52350281c5ae15b6a71f40993b275e2a40430", size = 3217450, upload-time = "2025-11-09T06:22:13.682Z" },
 ]
 
 [[package]]

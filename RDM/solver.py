@@ -163,21 +163,22 @@ def get_twoway_sampler(
         dt = (ts - t0) / float(n)
         us = jnp.linspace(0.0, 1.0, n, dtype=x0.dtype)
 
-        def body(carry, u):
+        def body(i, carry):
             rng_i, x_i = carry
             rng_i, step_rng = jax.random.split(rng_i)
+            u = us[i]
             ti = t0 + u * (ts - t0)
-            x_next, x_mean = predictor.update_fn(
+            x_next, _ = predictor.update_fn(
                 x=x_i,
                 t=ti,
                 dt=dt,
                 rng=step_rng,
                 mask=mask,
             )
-            return (rng_i, x_next), x_mean
+            return (rng_i, x_next)
 
-        (_, _), x_means = jax.lax.scan(body, (rng, x), xs=us)
-        return x_means[-1]
+        _, x_final = jax.lax.fori_loop(0, n, body, (rng, x))
+        return x_final
 
     return sampler
 
@@ -227,18 +228,19 @@ def sample_bridge_pc_batch(
     )
     dt = (ts[-1] - ts[0]) / jnp.asarray(n, dtype=x0.dtype)
 
-    def body(carry, t_scalar):
+    def body(i, carry):
         rng_i, x_i = carry
         rng_i, step_rng = jax.random.split(rng_i)
+        t_scalar = ts[i]
         t = jnp.full((x_i.shape[0],), t_scalar, dtype=x_i.dtype)
-        x_next, x_mean = predictor.update_fn(
+        x_next, _ = predictor.update_fn(
             x=x_i,
             t=t,
             dt=dt,
             rng=step_rng,
             mask=mask,
         )
-        return (rng_i, x_next), x_mean
+        return (rng_i, x_next)
 
-    (_, _), x_means = jax.lax.scan(body, (rng, x0), xs=ts)
-    return x_means[-1]
+    _, x_final = jax.lax.fori_loop(0, n, body, (rng, x0))
+    return x_final

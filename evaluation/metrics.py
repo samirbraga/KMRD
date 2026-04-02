@@ -16,14 +16,15 @@ def decode_sample_to_angles(
     n_feats: int = 6,
     coordinate_system: str = "intrinsic",
 ) -> np.ndarray:
+    # Training encodes angles[:, :-1, :] — the first (length-1) residues.
+    # Decode directly to (length-1, n_feats); no padding shift.
     n = int((length - 1) * n_feats)
     if coordinate_system == "extrinsic":
         vals = x[: (2 * n)]
         vals = np.arctan2(vals[1::2], vals[0::2]).astype(np.float32, copy=False)
     else:
-        vals = x[:n]
-    vals = np.pad(vals, (1, n_feats - 1), mode="constant", constant_values=0.0)
-    return vals.reshape(-1, n_feats).astype(np.float32, copy=False)
+        vals = x[:n].astype(np.float32, copy=False)
+    return vals.reshape(length - 1, n_feats)
 
 
 def kl_from_empirical(sampled: np.ndarray, reference: np.ndarray, nbins: int) -> float:

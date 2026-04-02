@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -50,14 +51,15 @@ def _decode_sample_to_angles(
     coordinate_system: Literal["intrinsic", "extrinsic"] = "intrinsic",
     n_feats: int = 6,
 ) -> np.ndarray:
+    # Training encodes angles[:, :-1, :] — the first (length-1) residues.
+    # Decode directly to (length-1, n_feats); no padding shift.
     n = int((length - 1) * n_feats)
     if coordinate_system == "extrinsic":
         vals = x[: (2 * n)]
         vals = np.arctan2(vals[1::2], vals[0::2]).astype(np.float32, copy=False)
     else:
-        vals = x[:n]
-    vals = np.pad(vals, (1, n_feats - 1), mode="constant", constant_values=0.0)
-    return vals.reshape(-1, n_feats).astype(np.float32, copy=False)
+        vals = x[:n].astype(np.float32, copy=False)
+    return vals.reshape(length - 1, n_feats)
 
 
 def _kl_from_empirical(sampled: np.ndarray, reference: np.ndarray, nbins: int = 200) -> float:
@@ -356,23 +358,132 @@ def _build_bridge_models(cfg: EvalConfig) -> tuple[BertForDiffusion, BertForDiff
 
 
 def _load_params(model: BertForDiffusion, cfg: EvalConfig):
+    def _extract_params_tree(node):
+        if not isinstance(node, Mapping):
+            return node
+        if "ema_params" in node:
+            return _extract_params_tree(node["ema_params"])
+        if "params" in node:
+            return _extract_params_tree(node["params"])
+        if "state" in node:
+            return _extract_params_tree(node["state"])
+        return node
+
+    def _remap_legacy_attention_names(node):
+        if not isinstance(node, Mapping):
+            return node
+        def _to_dense_qkv(param_tree):
+            if not isinstance(param_tree, Mapping):
+                return param_tree
+            out_tree = dict(param_tree)
+            k = out_tree.get("kernel", None)
+            b = out_tree.get("bias", None)
+            if hasattr(k, "ndim") and k.ndim == 3:
+                out_tree["kernel"] = np.asarray(k).reshape(k.shape[0], k.shape[1] * k.shape[2])
+            if hasattr(b, "ndim") and b.ndim == 2:
+                out_tree["bias"] = np.asarray(b).reshape(b.shape[0] * b.shape[1])
+            return out_tree
+
+        def _to_dense_out(param_tree):
+            if not isinstance(param_tree, Mapping):
+                return param_tree
+            out_tree = dict(param_tree)
+            k = out_tree.get("kernel", None)
+            if hasattr(k, "ndim") and k.ndim == 3:
+                out_tree["kernel"] = np.asarray(k).reshape(k.shape[0] * k.shape[1], k.shape[2])
+            return out_tree
+
+        out = dict(node)
+        base = out.get("base", out)
+        if isinstance(base, Mapping):
+            base_mut = dict(base)
+            changed = False
+            for k, v in list(base_mut.items()):
+                if not (isinstance(k, str) and k.startswith("encoder_layer_")):
+                    continue
+                if not isinstance(v, Mapping):
+                    continue
+                layer = dict(v)
+                sa = layer.get("self_attention", None)
+                if isinstance(sa, Mapping):
+                    if "self_attention_query" not in layer and "query" in sa:
+                        layer["self_attention_query"] = _to_dense_qkv(sa["query"])
+                    if "self_attention_key" not in layer and "key" in sa:
+                        layer["self_attention_key"] = _to_dense_qkv(sa["key"])
+                    if "self_attention_value" not in layer and "value" in sa:
+                        layer["self_attention_value"] = _to_dense_qkv(sa["value"])
+                    if "self_attention_output" not in layer and "out" in sa:
+                        layer["self_attention_output"] = _to_dense_out(sa["out"])
+                    layer.pop("self_attention", None)
+                    base_mut[k] = layer
+                    changed = True
+            if changed:
+                if "base" in out:
+                    out["base"] = base_mut
+                else:
+                    out = base_mut
+        return out
+
+    def _normalize_params_tree(node):
+        return _remap_legacy_attention_names(_extract_params_tree(node))
+
     b = Path(cfg.checkpoint_path).read_bytes()
     state_dict = flax.serialization.msgpack_restore(b)
     if isinstance(state_dict, dict):
         ema_params = state_dict.get("ema_params", None)
         if ema_params is not None:
-            return ema_params
+            return _normalize_params_tree(ema_params)
         params = state_dict.get("params", None)
         if params is not None:
-            return params
+            return _normalize_params_tree(params)
+        # Some legacy checkpoints nest params under "state".
+        state_obj = state_dict.get("state", None)
+        if isinstance(state_obj, dict):
+            ema_params = state_obj.get("ema_params", None)
+            if ema_params is not None:
+                return _normalize_params_tree(ema_params)
+            params = state_obj.get("params", None)
+            if params is not None:
+                return _normalize_params_tree(params)
 
-    # Backward-compatible fallback for older checkpoints.
+    # Backward-compatible fallback for older checkpoints:
+    # 1) full TrainState bytes
+    # 2) raw params bytes
     d = 6 * (cfg.max_seq_len - 1)
     sample_x = jnp.zeros((1, d), dtype=jnp.float32)
     sample_mask = jnp.ones((1, d), dtype=jnp.float32)
     state = create_train_state(model, jax.random.PRNGKey(0), sample_x, sample_mask)
-    loaded = flax.serialization.from_bytes(state, b)
-    return loaded.ema_params if getattr(loaded, "ema_params", None) is not None else loaded.params
+    try:
+        loaded = flax.serialization.from_bytes(state, b)
+        params = loaded.ema_params if getattr(loaded, "ema_params", None) is not None else loaded.params
+        return _normalize_params_tree(params)
+    except ValueError:
+        raw = flax.serialization.msgpack_restore(b)
+        raw = _normalize_params_tree(raw)
+        target = state.params
+        if isinstance(raw, Mapping):
+            # Common legacy mismatch: checkpoint params saved without the outer "base"
+            # scope while current model expects params["base"][...].
+            if "base" in target and "base" not in raw:
+                try:
+                    return flax.serialization.from_state_dict(target, {"base": raw})
+                except ValueError:
+                    pass
+            if "base" not in target and "base" in raw:
+                try:
+                    return flax.serialization.from_state_dict(target, raw["base"])
+                except ValueError:
+                    pass
+            # Try direct state-dict restore as final structured fallback.
+            try:
+                return flax.serialization.from_state_dict(target, raw)
+            except ValueError as exc:
+                raise ValueError(
+                    "Could not map checkpoint params to evaluation model structure. "
+                    "Try passing matching --net-size/--max-seq-len/--relative-position or inspect checkpoint keys."
+                ) from exc
+        # Last fallback: treat as raw bytes for params-only checkpoints.
+        return flax.serialization.from_bytes(target, b)
 
 
 def _extract_eval_params(state_dict):

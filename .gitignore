@@ -18,6 +18,7 @@ foldingdiff/cache_*
 wandb/
 weights/
 samples/
+sampled*
 plots/
 proteinmpnn_residues/
 ProteinMPNN/

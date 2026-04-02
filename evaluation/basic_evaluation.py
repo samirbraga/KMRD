@@ -268,6 +268,8 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
     dataset_workers: int = 0
     eval_test_limit: int = 0
     sample_upload_count: int = 10
+    save_pdb_samples: bool = True
+    save_raw_angles: bool = False
 
     # W&B
     wandb_entity: str = "rdem"
@@ -295,6 +297,25 @@ class EvalConfig(BaseSettings, cli_parse_args=True):
     beta_f: float = 0.1
     bridge_beta_0: float = 0.2
     bridge_beta_f: float = 0.001
+
+
+def _fix_pdb_file(src: Path, dst: Path) -> bool:
+    """Run pdbfixer on a PDB file and write fixed output to dst."""
+    try:
+        from openmm.app import PDBFile
+        from pdbfixer import PDBFixer
+    except Exception:
+        return False
+    try:
+        fixer = PDBFixer(filename=str(src))
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        with dst.open("w", encoding="utf-8") as out:
+            PDBFile.writeFile(fixer.topology, fixer.positions, out)
+        return True
+    except Exception:
+        return False
 
 
 def _load_config_from_checkpoint_sidecar(cfg: EvalConfig) -> EvalConfig:
@@ -593,9 +614,12 @@ def main() -> None:
 
     out_dir = Path(cfg.out_dir)
     pdb_dir = out_dir / "sampled_pdb"
+    fixed_pdb_dir = out_dir / "sampled_pdb_fixed"
     plots_dir = out_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
-    pdb_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.save_pdb_samples:
+        pdb_dir.mkdir(parents=True, exist_ok=True)
+        fixed_pdb_dir.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     lengths = []
@@ -671,26 +695,45 @@ def main() -> None:
                 n_feats=6,
             )
             decoded.append(angles)
-            np.save(out_dir / f"sample_len{length_i}_{saved:06d}.npy", angles)
-            pdb_path = pdb_dir / f"rec_prot_{length_i}_sample_{saved:06d}.pdb"
-            _angles_to_backbone_pdb(angles, pdb_path)
-            pdb_paths.append(pdb_path)
+            if cfg.save_raw_angles:
+                np.save(out_dir / f"sample_len{length_i}_{saved:06d}.npy", angles)
+            if cfg.save_pdb_samples:
+                pdb_path = pdb_dir / f"rec_prot_{length_i}_sample_{saved:06d}.pdb"
+                _angles_to_backbone_pdb(angles, pdb_path)
+                pdb_paths.append(pdb_path)
             saved += 1
 
-    np.savez_compressed(
-        out_dir / "samples.npz",
-        lengths=lengths_arr,
-        samples=np.array(decoded, dtype=object),
-    )
+    if cfg.save_raw_angles:
+        np.savez_compressed(
+            out_dir / "samples.npz",
+            lengths=lengths_arr,
+            samples=np.array(decoded, dtype=object),
+        )
 
     generated_stacked = np.concatenate(decoded, axis=0)
     test_values_stacked = _build_test_reference(cfg)
     metrics = _compute_and_save_metrics(generated_stacked, test_values_stacked, plots_dir=plots_dir)
     metrics_path = out_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    if cfg.save_pdb_samples:
+        print(f"saved_pdb_samples count={len(pdb_paths)} dir={pdb_dir}")
 
     run = None
     if cfg.wandb_mode != "disabled":
+        upload_pdb_paths = pdb_paths
+        if cfg.save_pdb_samples and len(pdb_paths) > 0:
+            fixed_paths: list[Path] = []
+            fixed_ok = 0
+            for p in pdb_paths:
+                dst = fixed_pdb_dir / p.name
+                if _fix_pdb_file(p, dst):
+                    fixed_paths.append(dst)
+                    fixed_ok += 1
+                else:
+                    fixed_paths.append(p)
+            upload_pdb_paths = fixed_paths
+            print(f"pdbfix_before_wandb fixed={fixed_ok}/{len(pdb_paths)}")
+
         run = wandb.init(
             entity=cfg.wandb_entity,
             project=cfg.wandb_project,
@@ -711,17 +754,20 @@ def main() -> None:
                 ],
             }
         )
-        keep = min(cfg.sample_upload_count, len(pdb_paths))
+        keep = min(cfg.sample_upload_count, len(upload_pdb_paths))
         if keep > 0:
-            idx = np.linspace(0, len(pdb_paths) - 1, num=keep, dtype=int)
+            idx = np.linspace(0, len(upload_pdb_paths) - 1, num=keep, dtype=int)
             run.log(
                 {
-                    "generated_proteins": [wandb.Molecule(str(pdb_paths[i])) for i in idx],
+                    "generated_proteins": [wandb.Molecule(str(upload_pdb_paths[i])) for i in idx],
                 }
             )
         if cfg.upload_samples_dir_artifact:
             artifact = wandb.Artifact(name="samples", type="dataset")
-            artifact.add_dir(str(pdb_dir))
+            if cfg.save_pdb_samples and fixed_pdb_dir.exists():
+                artifact.add_dir(str(fixed_pdb_dir))
+            else:
+                artifact.add_dir(str(pdb_dir))
             run.log_artifact(artifact)
         run.finish()
 
